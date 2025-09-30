@@ -1,0 +1,24 @@
+# Main configuration file
+defaults:
+  - model: qwen_3b
+  - dataset: multi_obj_v1
+  - experiment: multi_obj
+  - probe: default
+  - _self_
+
+# Output settings
+output:
+  results_root: /content/results
+  save_features: true
+  save_plots: true
+  suffix: _qwen3b_llmtap
+
+# Experiment settings
+batch_size: 8
+device: cuda
+seed: 0
+
+# Feature extraction
+decode: true
+max_new_tokens: 32
+do_sample: false

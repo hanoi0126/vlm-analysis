@@ -1,0 +1,8 @@
+# Multi-object tasks experiment configuration
+tasks:
+  - count
+  - position
+  - occlusion
+
+# Task prompts will be loaded from data/collate.py for multi-obj tasks
+# (questions are in the CSV for multi-obj tasks)

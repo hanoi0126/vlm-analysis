@@ -1,0 +1,8 @@
+# Probing configuration
+n_folds: 5
+seed: 0
+
+# Logistic Regression parameters
+max_iter: 2000
+C: 1.0
+solver: liblinear
