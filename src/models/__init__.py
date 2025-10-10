@@ -5,10 +5,10 @@ from .qwen import QwenVLFeatureExtractor
 from .registry import MODEL_REGISTRY, create_extractor, register_model
 
 __all__ = [
-    "BaseFeatureExtractor",
-    "TapOutput",
-    "QwenVLFeatureExtractor",
     "MODEL_REGISTRY",
+    "BaseFeatureExtractor",
+    "QwenVLFeatureExtractor",
+    "TapOutput",
     "create_extractor",
     "register_model",
 ]

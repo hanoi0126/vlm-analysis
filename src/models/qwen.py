@@ -1,17 +1,17 @@
 """Qwen2.5-VL feature extractor."""
 
 import re
-from typing import Dict, List, Optional, Union
 
 import torch
-from transformers import AutoProcessor, BitsAndBytesConfig
+from transformers import AutoProcessor
+from transformers.utils.quantization_config import BitsAndBytesConfig
 
 from .base import BaseFeatureExtractor, TapOutput
 
 try:
     from transformers import AutoModelForImageTextToText as ModelClass
 except Exception:
-    from transformers import AutoModelForVision2Seq as ModelClass
+    from transformers import AutoModelForVision2Seq as ModelClass  # type: ignore[assignment]
 
 
 class QwenVLFeatureExtractor(BaseFeatureExtractor):
@@ -23,7 +23,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         device: str = "cuda",
         int8: bool = False,
         use_fast_processor: bool = True,
-        llm_layers: Union[str, List[int]] = "all",
+        llm_layers: str | list[int] = "all",
     ) -> None:
         """
         Initialize Qwen VL feature extractor.
@@ -38,12 +38,10 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         super().__init__(device)
 
         # Load model
-        quant = (
-            BitsAndBytesConfig(load_in_8bit=True)
-            if int8 and torch.cuda.is_available()
-            else None
+        quant: BitsAndBytesConfig | None = (
+            BitsAndBytesConfig(load_in_8bit=True) if int8 and torch.cuda.is_available() else None  # type: ignore[no-untyped-call]
         )
-        self.model = ModelClass.from_pretrained(
+        self.model = ModelClass.from_pretrained(  # type: ignore[no-untyped-call]
             model_id,
             quantization_config=quant,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -52,20 +50,20 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         self.model.eval()
 
         # Load processor
-        self.processor = AutoProcessor.from_pretrained(
-            model_id, use_fast=use_fast_processor
+        self.processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+            pretrained_model_name_or_path=model_id, use_fast=use_fast_processor
         )
 
         # Setup hooks
         self.llm_layers = llm_layers
         self._tap = TapOutput()
-        self._last_bs: Optional[int] = None
-        self._last_attn: Optional[torch.Tensor] = None
+        self._last_bs: int | None = None
+        self._last_attn: torch.Tensor | None = None
 
         self._capture_enabled = True
         self._in_gen = False
-        self._gen_sum: Dict[str, torch.Tensor] = {}
-        self._gen_cnt: Dict[str, int] = {}
+        self._gen_sum: dict[str, torch.Tensor] = {}
+        self._gen_cnt: dict[str, int] = {}
 
         self._setup_hooks()
 
@@ -74,9 +72,10 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         # Visual encoder hooks (pre/post)
         merger = self._get_module(self.model, "model.visual.merger")
         if merger is None:
-            raise ValueError("visual.merger not found")
+            error_msg = "visual.merger not found"
+            raise ValueError(error_msg)
 
-        def merger_pre_hook(module, inputs):
+        def merger_pre_hook(module, inputs) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN001, ARG001
             if not self._capture_enabled:
                 return
             x = inputs[0]
@@ -84,30 +83,34 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
             if not isinstance(x, torch.Tensor):
                 return
 
-            if x.ndim == 3:
+            ndim_3d = 3
+            ndim_2d = 2
+            if x.ndim == ndim_3d:
                 pooled = x.mean(dim=1)
-            elif x.ndim == 2:
-                B = self._last_bs or x.shape[0]
-                T = x.shape[0] // B
-                pooled = x.view(B, T, -1).mean(dim=1)
+            elif x.ndim == ndim_2d:
+                batch_size = self._last_bs or x.shape[0]
+                seq_len = x.shape[0] // batch_size
+                pooled = x.view(batch_size, seq_len, -1).mean(dim=1)
             else:
                 pooled = x.flatten(start_dim=1)
 
             self._tap.pre = pooled.detach().to("cpu")
 
-        def merger_hook(module, inputs, output):
+        def merger_hook(module, inputs, output) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN001, ARG001
             if not self._capture_enabled:
                 return
             y = output[0] if isinstance(output, (tuple, list)) else output
             if not isinstance(y, torch.Tensor):
                 return
 
-            if y.ndim == 3:
+            ndim_3d = 3
+            ndim_2d = 2
+            if y.ndim == ndim_3d:
                 pooled = y.mean(dim=1)
-            elif y.ndim == 2:
-                B = self._last_bs or y.shape[0]
-                T = y.shape[0] // B
-                pooled = y.view(B, T, -1).mean(dim=1)
+            elif y.ndim == ndim_2d:
+                batch_size = self._last_bs or y.shape[0]
+                seq_len = y.shape[0] // batch_size
+                pooled = y.view(batch_size, seq_len, -1).mean(dim=1)
             else:
                 pooled = y.flatten(start_dim=1)
 
@@ -118,35 +121,32 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
 
         # LLM layer hooks
         self._llm_hooks = []
-        if self.llm_layers is not None and (
-            self.llm_layers == "all" or len(self.llm_layers) > 0
-        ):
+        if self.llm_layers is not None and (self.llm_layers == "all" or len(self.llm_layers) > 0):
             lm_layers = self._get_module(self.model, "model.language_model.layers")
             if lm_layers is None:
-                raise ValueError("language_model.layers not found")
+                error_msg = "language_model.layers not found"
+                raise ValueError(error_msg)
 
-            num_layers = len(lm_layers)
-            want = (
-                list(range(num_layers)) if self.llm_layers == "all" else self.llm_layers
-            )
+            num_layers = len(lm_layers)  # type: ignore[arg-type]
+            want: list[int] = list(range(num_layers)) if self.llm_layers == "all" else self.llm_layers  # type: ignore[assignment]
 
             for idx in want:
                 if not (0 <= idx < num_layers):
                     continue
-                layer = lm_layers[idx]
+                layer = lm_layers[idx]  # type: ignore[index]
                 tag = f"l{idx:02d}"
 
-                def make_hook(tag):
-                    def _hook(module, inputs, output):
+                def make_hook(tag):  # type: ignore[no-untyped-def]  # noqa: ANN001, ANN202
+                    def _hook(module, inputs, output) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN001, ARG001
                         if not self._capture_enabled:
                             return
-                        Y = output[0] if isinstance(output, (tuple, list)) else output
-                        if not isinstance(Y, torch.Tensor):
+                        y = output[0] if isinstance(output, (tuple, list)) else output
+                        if not isinstance(y, torch.Tensor):
                             return
 
                         if self._in_gen:
                             # During generation: accumulate last token
-                            pooled = Y[:, -1, :]
+                            pooled = y[:, -1, :]
                             cpu = pooled.detach().to("cpu")
                             if tag not in self._gen_sum:
                                 self._gen_sum[tag] = torch.zeros_like(cpu)
@@ -156,20 +156,18 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
                         else:
                             # Before generation: last valid token
                             if self._last_attn is None:
-                                pooled = Y[:, -1, :]
+                                pooled = y[:, -1, :]
                             else:
                                 idxs = self._last_attn.sum(dim=1) - 1
-                                ar = torch.arange(Y.shape[0], device=Y.device)
-                                pooled = Y[ar, idxs, :]
+                                ar = torch.arange(y.shape[0], device=y.device)
+                                pooled = y[ar, idxs, :]
                             self._tap.layers[tag] = pooled.detach().to("cpu")
 
                     return _hook
 
-                self._llm_hooks.append(layer.register_forward_hook(make_hook(tag)))
+                self._llm_hooks.append(layer.register_forward_hook(make_hook(tag)))  # type: ignore[no-untyped-call]
 
-    def _get_module(
-        self, root: torch.nn.Module, dotted: str
-    ) -> Optional[torch.nn.Module]:
+    def _get_module(self, root: torch.nn.Module, dotted: str) -> torch.nn.Module | None:
         """
         Get nested module by dotted path.
 
@@ -188,16 +186,16 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         return cur
 
     @torch.no_grad()
-    def forward(
+    def forward(  # noqa: PLR0913
         self,
-        images: Optional[List] = None,  # Optional に変更
-        texts: Optional[List[str]] = None,
+        images: list | None = None,  # Optional に変更
+        texts: list[str] | None = None,
         *,
         use_image: bool = True,  # 新規パラメータ
         decode: bool = False,
         max_new_tokens: int = 32,
         do_sample: bool = False,
-        generation_kwargs: Optional[Dict] = None,
+        generation_kwargs: dict | None = None,
     ) -> TapOutput:
         """Extract features with or without images."""
         if texts is None:
@@ -206,7 +204,8 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         # Chat template の構築を use_image で分岐
         if use_image:
             if images is None:
-                raise ValueError("use_image=True requires images")
+                error_msg = "use_image=True requires images"
+                raise ValueError(error_msg)
             msgs = [
                 [
                     {
@@ -217,24 +216,14 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
                         ],
                     }
                 ]
-                for img, t in zip(images, texts)
+                for img, t in zip(images, texts, strict=False)
             ]
         else:
             # テキストのみ
-            msgs = [
-                [{"role": "user", "content": [{"type": "text", "text": t}]}]
-                for t in texts
-            ]
-        templated = [
-            self.processor.apply_chat_template(
-                m, tokenize=False, add_generation_prompt=True
-            )
-            for m in msgs
-        ]
+            msgs = [[{"role": "user", "content": [{"type": "text", "text": t}]}] for t in texts]
+        templated = [self.processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True) for m in msgs]
         if use_image:
-            batch = self.processor(
-                text=templated, images=images, return_tensors="pt", padding=True
-            )
+            batch = self.processor(text=templated, images=images, return_tensors="pt", padding=True)
         else:
             batch = self.processor(text=templated, return_tensors="pt", padding=True)
         batch = {k: v.to(self.device) for k, v in batch.items()}
@@ -242,7 +231,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         # Extract features (pre/post/layers)
         self._tap = TapOutput()
         self._last_bs = len(images) if images is not None else len(texts)
-        self._last_attn = batch.get("attention_mask", None)
+        self._last_attn = batch.get("attention_mask")
         self._capture_enabled = True
         _ = self.model(**batch, output_hidden_states=False, return_dict=True)
 
@@ -254,14 +243,10 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
 
             gen_kwargs = dict(generation_kwargs or {})
             # Handle temperature
-            if "temperature" in gen_kwargs and (
-                gen_kwargs["temperature"] is None or gen_kwargs["temperature"] <= 0
-            ):
+            if "temperature" in gen_kwargs and (gen_kwargs["temperature"] is None or gen_kwargs["temperature"] <= 0):
                 gen_kwargs.pop("temperature", None)
 
-            _do_sample = bool(do_sample) or (
-                "temperature" in gen_kwargs and gen_kwargs["temperature"] > 0
-            )
+            _do_sample = bool(do_sample) or ("temperature" in gen_kwargs and gen_kwargs["temperature"] > 0)
             if not _do_sample:
                 for k in (
                     "temperature",
@@ -289,9 +274,10 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
             # Decode new tokens only
             prompt_lens = batch["attention_mask"].sum(dim=1)
             outs, parsed = [], []
-            for i in range(gen.sequences.size(0)):
+            sequences = gen.sequences  # type: ignore[union-attr]
+            for i in range(sequences.size(0)):
                 start = int(prompt_lens[i].item())
-                new_tokens = gen.sequences[i, start:]
+                new_tokens = sequences[i, start:]
                 text = tok.decode(new_tokens, skip_special_tokens=True)
                 outs.append(text)
                 m = re.search(r"\{([^}]+)\}", text)
@@ -311,7 +297,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
 
         return self._tap
 
-    def get_tap_points(self) -> List[str]:
+    def get_tap_points(self) -> list[str]:
         """
         Get available tap point names.
 

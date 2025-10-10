@@ -2,7 +2,6 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 import torch
 
@@ -11,11 +10,11 @@ import torch
 class TapOutput:
     """Output from feature extraction."""
 
-    pre: Optional[torch.Tensor] = None  # (B, D_pre) — Visual Encoder output
-    post: Optional[torch.Tensor] = None  # (B, D_post) — Projection Layer output
-    layers: Dict[str, torch.Tensor] = field(default_factory=dict)  # {'l00': (B,D), ...}
-    gen_texts: Optional[List[str]] = None  # Generated texts (new tokens only)
-    gen_parsed: Optional[List[Optional[str]]] = None  # Parsed {answer}
+    pre: torch.Tensor | None = None  # (B, D_pre) — Visual Encoder output
+    post: torch.Tensor | None = None  # (B, D_post) — Projection Layer output
+    layers: dict[str, torch.Tensor] = field(default_factory=dict)  # {'l00': (B,D), ...}
+    gen_texts: list[str] | None = None  # Generated texts (new tokens only)
+    gen_parsed: list[str | None] | None = None  # Parsed {answer}
 
 
 class BaseFeatureExtractor(ABC, torch.nn.Module):
@@ -32,15 +31,15 @@ class BaseFeatureExtractor(ABC, torch.nn.Module):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
 
     @abstractmethod
-    def forward(
+    def forward(  # noqa: PLR0913
         self,
-        images: List,
-        texts: Optional[List[str]] = None,
+        images: list,
+        texts: list[str] | None = None,
         *,
         decode: bool = False,
         max_new_tokens: int = 32,
         do_sample: bool = False,
-        generation_kwargs: Optional[Dict] = None,
+        generation_kwargs: dict | None = None,
     ) -> TapOutput:
         """
         Extract features from images and texts.
@@ -56,14 +55,12 @@ class BaseFeatureExtractor(ABC, torch.nn.Module):
         Returns:
             TapOutput containing extracted features
         """
-        pass
 
     @abstractmethod
-    def get_tap_points(self) -> List[str]:
+    def get_tap_points(self) -> list[str]:
         """
         Get list of available feature tap points.
 
         Returns:
             List of tap point names (e.g., ['pre', 'post', 'l00', ...])
         """
-        pass
