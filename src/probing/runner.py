@@ -4,7 +4,6 @@ import csv
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -12,17 +11,16 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from ..config.schema import Config
-from ..data import (
+from src.config.schema import Config
+from src.data import (
     HuggingFaceDataset,
-    UnifiedDataset,
     unified_collate,
 )
-from ..models.base import BaseFeatureExtractor
-from .trainer import train_eval_probe
+from src.models.base import BaseFeatureExtractor
+from src.probing.trainer import train_eval_probe
 
 # Multi-object task names
-MULTI_OBJ_TASKS = {"count", "position", "occlusion"}
+MULTI_OBJ_TASKS: set[str] = {"count", "position", "occlusion"}
 
 
 def run_extract_probe_decode(
@@ -42,43 +40,32 @@ def run_extract_probe_decode(
     Returns:
         DataFrame with summary results
     """
-    out_root = Path(config.output.results_root)
+    out_root: Path = Path(config.output.results_root)
 
-    summaries: List[Dict] = []
+    summaries: list[dict] = []
 
     for task in config.experiment.tasks:
         is_multi = task in MULTI_OBJ_TASKS
 
-        # Load dataset (HuggingFace or local CSV)
-        if config.dataset.hf_dataset is not None:
-            # Load from HuggingFace
-            # For visual-object-attributes: split="task_name" (e.g., "color", "count")
-            # or split="train" for all tasks combined
-            actual_split = (
-                task if config.dataset.hf_split == "auto" else config.dataset.hf_split
-            )
-            # If using task-specific split, no filtering needed
-            # If using "train" split, need to filter by task
-            filter_task = None if actual_split == task else task
+        # Load dataset from HuggingFace
+        if config.dataset.hf_dataset is None:
+            error_msg = "hf_dataset must be specified. Only HuggingFace datasets are supported."
+            raise ValueError(error_msg)
 
-            ds = HuggingFaceDataset(
-                dataset_name=config.dataset.hf_dataset,
-                split=actual_split,
-                subset=config.dataset.hf_subset,
-                task=filter_task,
-                image_column=config.dataset.image_column,
-                label_column=config.dataset.label_column,
-                task_column=config.dataset.task_column,
-            )
-        else:
-            # Load from local CSV
-            dataset_dir = Path(config.dataset.dataset_dir)
-            csv_path = dataset_dir / config.dataset.csv_filename
-            ds = UnifiedDataset(
-                str(csv_path),
-                task=task,
-                images_root=str(dataset_dir),
-            )
+        # For visual-object-attributes: split="task_name" (e.g., "color", "count")
+        # or split="train" for all tasks combined
+        actual_split = task if config.dataset.hf_split == "auto" else config.dataset.hf_split
+        # If using task-specific split, no filtering needed
+        # If using "train" split, need to filter by task
+        filter_task = None if actual_split == task else task
+
+        ds = HuggingFaceDataset(
+            dataset_name=config.dataset.hf_dataset,
+            split=actual_split,
+            subset=config.dataset.hf_subset,
+            task=filter_task,
+            cache_dir=None,
+        )
 
         dl = DataLoader(
             ds,
@@ -88,12 +75,12 @@ def run_extract_probe_decode(
         )
 
         # Buffers for features
-        arr_buf: Dict[str, List[np.ndarray]] = {"pre": [], "post": []}
-        labels_chunks: List[np.ndarray] = []
-        filenames_all: List[str] = []
-        gen_texts_all: List[str] = []
-        gen_parsed_all: List[Optional[str]] = []
-        questions_all: List[str] = []
+        arr_buf: dict[str, list[np.ndarray]] = {"pre": [], "post": []}
+        labels_chunks: list[np.ndarray] = []
+        filenames_all: list[str] = []
+        gen_texts_all: list[str] = []
+        gen_parsed_all: list[str | None] = []
+        questions_all: list[str] = []
 
         # Iterate over dataset
         it_total = math.ceil(len(ds) / config.batch_size)
@@ -105,13 +92,9 @@ def run_extract_probe_decode(
                 if use_image:
                     # Image mode: use question from dataset (works for both single-obj and multi-obj tasks)
                     texts = b["question"]
-                    if any(
-                        (t is None) or (not isinstance(t, str)) or (not t.strip())
-                        for t in texts
-                    ):
-                        raise ValueError(
-                            f"[{task}] batch contains empty/None question: {texts}"
-                        )
+                    if any((t is None) or (not isinstance(t, str)) or (not t.strip()) for t in texts):
+                        error_msg = f"[{task}] batch contains empty/None question: {texts}"
+                        raise ValueError(error_msg)
                 else:
                     # Text-only mode: use description + question
                     texts = []
@@ -146,9 +129,7 @@ def run_extract_probe_decode(
                     if b.get("label_id") is not None:
                         y_ids = b["label_id"]
                     else:
-                        y_ids = np.asarray(
-                            [ds.cls2id[str(a)] for a in b["answer"]], dtype=np.int64
-                        )
+                        y_ids = np.asarray([ds.cls2id[str(a)] for a in b["answer"]], dtype=np.int64)
                     labels_chunks.append(y_ids)
                 else:
                     labels_chunks.append(b["label"])
@@ -165,10 +146,7 @@ def run_extract_probe_decode(
 
         # Concatenate arrays
         y = np.concatenate(labels_chunks, axis=0)
-        X = {
-            k: (np.concatenate(v, axis=0) if len(v) > 0 else None)
-            for k, v in arr_buf.items()
-        }
+        x_dict = {k: (np.concatenate(v, axis=0) if len(v) > 0 else None) for k, v in arr_buf.items()}
 
         # Save features
         outdir = out_root / f"{task}{config.output.suffix}"
@@ -176,7 +154,7 @@ def run_extract_probe_decode(
         np.save(outdir / "labels.npy", y)
 
         saved = []
-        for k, v in X.items():
+        for k, v in x_dict.items():
             if v is not None and v.size > 0:
                 np.save(outdir / f"features_{k}.npy", v)
                 saved.append((k, v.shape))
@@ -184,34 +162,24 @@ def run_extract_probe_decode(
         # Save decode log if enabled
         decode_acc = np.nan
         if config.decode:
-            if (
-                len(filenames_all) != len(y)
-                or len(gen_texts_all) != len(y)
-                or len(gen_parsed_all) != len(y)
-            ):
-                raise ValueError(
+            if len(filenames_all) != len(y) or len(gen_texts_all) != len(y) or len(gen_parsed_all) != len(y):
+                error_msg = (
                     f"[{task}] length mismatch: files={len(filenames_all)} labels={len(y)} "
                     f"texts={len(gen_texts_all)} parsed={len(gen_parsed_all)}"
                 )
+                raise ValueError(error_msg)
 
             # Get ground truth class names
             if is_multi:
-                if hasattr(ds, "id2cls") and ds.id2cls:
-                    gt_cls = [ds.id2cls[int(i)] for i in y]
-                else:
-                    gt_cls = [str(a) for a in questions_all]
+                gt_cls = [ds.id2cls[int(i)] for i in y] if hasattr(ds, "id2cls") and ds.id2cls else [str(a) for a in questions_all]
             else:
                 id2cls = getattr(ds, "id2cls", {i: c for c, i in ds.cls2id.items()})
                 gt_cls = [id2cls[int(i)] for i in y]
 
-            decode_acc = float(
-                np.mean([p == g for p, g in zip(gen_parsed_all, gt_cls)])
-            )
+            decode_acc = float(np.mean([p == g for p, g in zip(gen_parsed_all, gt_cls, strict=False)]))
 
             # Save CSV
-            with open(
-                outdir / "decode_log.csv", "w", newline="", encoding="utf-8"
-            ) as f:
+            with open(outdir / "decode_log.csv", "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 # Include question column for all task types
                 header = [
@@ -259,14 +227,14 @@ def run_extract_probe_decode(
     return df
 
 
-def probe_all_tasks(
+def probe_all_tasks(  # noqa: PLR0913
     results_root: Path,
-    tasks: List[str],
+    tasks: list[str],
     suffix: str,
     n_folds: int = 5,
     seed: int = 0,
     max_iter: int = 2000,
-    C: float = 1.0,
+    c_value: float = 1.0,
     solver: str = "lbfgs",
     verbose: bool = True,
 ) -> pd.DataFrame:
@@ -280,7 +248,7 @@ def probe_all_tasks(
         n_folds: Number of CV folds
         seed: Random seed
         max_iter: Max iterations for LogisticRegression
-        C: Inverse regularization strength
+        c_value: Inverse regularization strength
         solver: Solver name
         verbose: Print verbose output
 
@@ -288,7 +256,7 @@ def probe_all_tasks(
         Summary DataFrame with best layer per task
     """
     results_root = Path(results_root)
-    rows: List[Dict] = []
+    rows: list[dict] = []
 
     for task in tasks:
         task_dir = results_root / f"{task}{suffix}"
@@ -308,25 +276,30 @@ def probe_all_tasks(
             n_folds=n_folds,
             seed=seed,
             max_iter=max_iter,
-            C=C,
+            c_value=c_value,
             solver=solver,
             verbose=verbose,
         )
 
         # Find best layer by accuracy
-        def _safe(val):
-            return (
-                -1.0
-                if (val is None or (isinstance(val, float) and np.isnan(val)))
-                else val
-            )
+        def _safe(val: float | None) -> float:
+            return -1.0 if (val is None or (isinstance(val, float) and np.isnan(val))) else val
 
-        best_name, best_acc, best_auc = None, -1.0, -1.0
+        best_name: str | None = None
+        best_acc: float = -1.0
+        best_auc: float = -1.0
         for k, m in metrics.items():
             if _safe(m.get("acc_mean")) > best_acc:
                 best_name = k
                 best_acc = _safe(m.get("acc_mean"))
                 best_auc = _safe(m.get("auc_mean"))
+
+        n_value: int | float = np.nan
+        if metrics:
+            first_metric = next(iter(metrics.values()))
+            n_from_metric = first_metric.get("n")
+            if n_from_metric is not None:
+                n_value = int(n_from_metric)
 
         rows.append(
             {
@@ -335,22 +308,22 @@ def probe_all_tasks(
                 "best_layer": best_name,
                 "best_acc": best_acc if best_acc >= 0 else np.nan,
                 "best_auc": best_auc if best_auc >= 0 else np.nan,
-                "n": int(next(iter(metrics.values())).get("n")) if metrics else np.nan,
+                "n": n_value,
             }
         )
 
     return pd.DataFrame(rows).sort_values("task").reset_index(drop=True)
 
 
-def _probe_task_dir(
+def _probe_task_dir(  # noqa: PLR0913
     task_dir: Path,
     n_folds: int = 5,
     seed: int = 0,
     max_iter: int = 2000,
-    C: float = 1.0,
+    c_value: float = 1.0,
     solver: str = "lbfgs",
     verbose: bool = True,
-) -> Dict[str, Dict]:
+) -> dict[str, dict]:
     """
     Probe all features in a task directory.
 
@@ -359,7 +332,7 @@ def _probe_task_dir(
         n_folds: Number of CV folds
         seed: Random seed
         max_iter: Max iterations for LogisticRegression
-        C: Inverse regularization strength
+        c_value: Inverse regularization strength
         solver: Solver name
         verbose: Print output
 
@@ -368,39 +341,33 @@ def _probe_task_dir(
     """
     y_path = task_dir / "labels.npy"
     if not y_path.exists():
-        raise FileNotFoundError(f"labels.npy not found in {task_dir}")
+        error_msg = f"labels.npy not found in {task_dir}"
+        raise FileNotFoundError(error_msg)
 
     y = np.load(y_path)
     files = sorted(task_dir.glob("features_*.npy"))
 
-    metrics: Dict[str, Dict] = {}
+    metrics: dict[str, dict] = {}
     for fp in files:
         name = fp.stem.replace("features_", "")
-        X = np.load(fp)
+        features = np.load(fp)
 
-        if X.shape[0] != y.shape[0] or X.ndim != 2:
+        ndim_expected = 2
+        if features.shape[0] != y.shape[0] or features.ndim != ndim_expected:
             if verbose:
-                print(
-                    f"[WARN] Skip {name}: X.shape={X.shape} incompatible with y.shape[0]={y.shape[0]}"
-                )
+                print(f"[WARN] Skip {name}: features.shape={features.shape} incompatible with y.shape[0]={y.shape[0]}")
             continue
 
-        m = train_eval_probe(
-            X, y, n_splits=n_folds, seed=seed, max_iter=max_iter, C=C, solver=solver
-        )
+        m = train_eval_probe(features, y, n_splits=n_folds, seed=seed, max_iter=max_iter, C=c_value, solver=solver)
         metrics[name] = m
 
         if verbose:
             accm, accs = m["acc_mean"], m["acc_std"]
             aucm, aucs = m["auc_mean"], m["auc_std"]
-            print(
-                f"[{task_dir.name}] {name:>10s} -> acc={accm:.3f}±{accs:.3f} | auc={aucm:.3f}±{aucs:.3f}"
-            )
+            print(f"[{task_dir.name}] {name:>10s} -> acc={accm:.3f}±{accs:.3f} | auc={aucm:.3f}±{aucs:.3f}")
 
     # Save metrics.json
-    (task_dir / "metrics.json").write_text(
-        json.dumps(metrics, indent=2), encoding="utf-8"
-    )
+    (task_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     if verbose:
         print(f"Saved: {task_dir / 'metrics.json'}")
 

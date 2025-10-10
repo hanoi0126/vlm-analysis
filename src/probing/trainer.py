@@ -1,6 +1,6 @@
 """Probing trainer for evaluating layer representations."""
 
-from typing import Dict, List
+import contextlib
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -31,27 +31,25 @@ def safe_macro_ovr_auc(
         neg = ~pos
         if not (pos.any() and neg.any()):
             continue
-        try:
-            aucs.append(roc_auc_score(pos.astype(int), y_score[:, c]))
-        except Exception:
-            pass
-    return float(np.mean(aucs)) if len(aucs) else float("nan")
+        with contextlib.suppress(Exception):
+            aucs.append(roc_auc_score(y_true=pos.astype(int), y_score=y_score[:, c]))
+    return float(np.mean(aucs)) if aucs else float("nan")
 
 
-def train_eval_probe(
-    X: np.ndarray,
+def train_eval_probe(  # noqa: PLR0913
+    features: np.ndarray,
     y: np.ndarray,
     n_splits: int = 5,
     seed: int = 0,
     max_iter: int = 2000,
-    C: float = 1.0,
+    C: float = 1.0,  # noqa: N803
     solver: str = "lbfgs",
-) -> Dict:
+) -> dict:
     """
     Train and evaluate linear probe with cross-validation.
 
     Args:
-        X: Feature matrix (N, D)
+        features: Feature matrix (N, D)
         y: Labels (N,)
         n_splits: Number of CV folds
         seed: Random seed
@@ -66,43 +64,45 @@ def train_eval_probe(
     binc = np.bincount(y)
     min_per_class = int(binc.min()) if len(binc) > 1 else 0
 
-    if min_per_class < 2:
+    min_samples_per_class = 2
+    if min_per_class < min_samples_per_class:
         return {
             "acc_mean": float("nan"),
             "acc_std": float("nan"),
             "auc_mean": float("nan"),
             "auc_std": float("nan"),
             "conf_mats": [],
-            "n": int(X.shape[0]),
-            "d": int(X.shape[1]),
+            "n": int(features.shape[0]),
+            "d": int(features.shape[1]),
             "note": "not enough samples per class for StratifiedKFold",
         }
 
     # Adjust n_splits if needed
-    n_splits = max(2, min(n_splits, min_per_class))
+    min_splits = 2
+    n_splits = max(min_splits, min(n_splits, min_per_class))
 
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    accs: List[float] = []
-    aucs: List[float] = []
-    cms: List[List] = []
+    accs: list[float] = []
+    aucs: list[float] = []
+    cms: list[list] = []
     n_classes = int(y.max()) + 1
 
-    for tr, te in skf.split(X, y):
+    for tr, te in skf.split(features, y):
         scaler = StandardScaler()
-        Xtr = scaler.fit_transform(X[tr])
-        Xte = scaler.transform(X[te])
+        x_train = scaler.fit_transform(features[tr])
+        x_test = scaler.transform(features[te])
 
         clf = LogisticRegression(max_iter=max_iter, C=C, solver=solver)
-        clf.fit(Xtr, y[tr])
+        clf.fit(x_train, y[tr])
 
-        y_pred = clf.predict(Xte)
+        y_pred = clf.predict(x_test)
         accs.append(accuracy_score(y[te], y_pred))
         cms.append(confusion_matrix(y[te], y_pred).tolist())
 
         if hasattr(clf, "predict_proba"):
-            y_score = clf.predict_proba(Xte)
+            y_score = clf.predict_proba(x_test)
         else:
-            df = clf.decision_function(Xte)
+            df = clf.decision_function(x_test)
             if df.ndim == 1:
                 df = np.vstack([-df, df]).T
             y_score = df
@@ -115,6 +115,6 @@ def train_eval_probe(
         "auc_mean": float(np.nanmean(aucs)),
         "auc_std": float(np.nanstd(aucs)),
         "conf_mats": cms,
-        "n": int(X.shape[0]),
-        "d": int(X.shape[1]),
+        "n": int(features.shape[0]),
+        "d": int(features.shape[1]),
     }
