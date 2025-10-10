@@ -14,14 +14,12 @@ from tqdm.auto import tqdm
 
 from ..config.schema import Config
 from ..data import (
-    MultiObjDataset,
-    SingleObjDataset,
-    collate_keep_pil,
-    collate_keep_pil_multi,
+    HuggingFaceDataset,
+    UnifiedDataset,
+    unified_collate,
 )
 from ..models.base import BaseFeatureExtractor
 from .trainer import train_eval_probe
-
 
 # Multi-object task names
 MULTI_OBJ_TASKS = {"count", "position", "occlusion"}
@@ -30,6 +28,7 @@ MULTI_OBJ_TASKS = {"count", "position", "occlusion"}
 def run_extract_probe_decode(
     extractor: BaseFeatureExtractor,
     config: Config,
+    use_image: bool = True,
     show_progress: bool = True,
 ) -> pd.DataFrame:
     """
@@ -43,8 +42,6 @@ def run_extract_probe_decode(
     Returns:
         DataFrame with summary results
     """
-    dataset_dir = Path(config.dataset.dataset_dir)
-    csv_path = dataset_dir / config.dataset.csv_filename
     out_root = Path(config.output.results_root)
 
     summaries: List[Dict] = []
@@ -52,31 +49,43 @@ def run_extract_probe_decode(
     for task in config.experiment.tasks:
         is_multi = task in MULTI_OBJ_TASKS
 
-        # Load dataset
-        if is_multi:
-            ds = MultiObjDataset(
-                str(csv_path),
-                task=task,
-                images_root=str(dataset_dir),
+        # Load dataset (HuggingFace or local CSV)
+        if config.dataset.hf_dataset is not None:
+            # Load from HuggingFace
+            # For visual-object-attributes: split="task_name" (e.g., "color", "count")
+            # or split="train" for all tasks combined
+            actual_split = (
+                task if config.dataset.hf_split == "auto" else config.dataset.hf_split
             )
-            dl = DataLoader(
-                ds,
-                batch_size=config.batch_size,
-                shuffle=False,
-                collate_fn=collate_keep_pil_multi,
+            # If using task-specific split, no filtering needed
+            # If using "train" split, need to filter by task
+            filter_task = None if actual_split == task else task
+
+            ds = HuggingFaceDataset(
+                dataset_name=config.dataset.hf_dataset,
+                split=actual_split,
+                subset=config.dataset.hf_subset,
+                task=filter_task,
+                image_column=config.dataset.image_column,
+                label_column=config.dataset.label_column,
+                task_column=config.dataset.task_column,
             )
         else:
-            ds = SingleObjDataset(
+            # Load from local CSV
+            dataset_dir = Path(config.dataset.dataset_dir)
+            csv_path = dataset_dir / config.dataset.csv_filename
+            ds = UnifiedDataset(
                 str(csv_path),
                 task=task,
                 images_root=str(dataset_dir),
             )
-            dl = DataLoader(
-                ds,
-                batch_size=config.batch_size,
-                shuffle=False,
-                collate_fn=collate_keep_pil,
-            )
+
+        dl = DataLoader(
+            ds,
+            batch_size=config.batch_size,
+            shuffle=False,
+            collate_fn=unified_collate,
+        )
 
         # Buffers for features
         arr_buf: Dict[str, List[np.ndarray]] = {"pre": [], "post": []}
@@ -92,8 +101,9 @@ def run_extract_probe_decode(
 
         with torch.no_grad():
             for b in it:
-                # Prepare texts
-                if is_multi:
+                # Prepare texts based on use_image flag
+                if use_image:
+                    # Image mode: use question from dataset (works for both single-obj and multi-obj tasks)
                     texts = b["question"]
                     if any(
                         (t is None) or (not isinstance(t, str)) or (not t.strip())
@@ -103,16 +113,19 @@ def run_extract_probe_decode(
                             f"[{task}] batch contains empty/None question: {texts}"
                         )
                 else:
-                    if config.experiment.task_prompts is None:
-                        raise ValueError(
-                            "task_prompts must be set for single-obj tasks"
-                        )
-                    texts = [config.experiment.task_prompts[task]] * len(b["image"])
+                    # Text-only mode: use description + question
+                    texts = []
+                    for i, meta in enumerate(b["meta"]):
+                        desc = meta.get("description", "")
+                        question = b["question"][i] if b["question"] else ""
+                        text = f"{desc}\n\n{question}" if desc else question
+                        texts.append(text)
 
                 # Extract features
                 to = extractor(
-                    b["image"],
+                    b["image"] if use_image else None,
                     texts=texts,
+                    use_image=use_image,
                     decode=config.decode,
                     max_new_tokens=config.max_new_tokens,
                     do_sample=config.do_sample,
@@ -128,7 +141,7 @@ def run_extract_probe_decode(
                         arr_buf[name] = []
                     arr_buf[name].append(ten.detach().cpu().numpy())
 
-                # Collect labels
+                # Collect labels and questions
                 if is_multi:
                     if b.get("label_id") is not None:
                         y_ids = b["label_id"]
@@ -137,9 +150,11 @@ def run_extract_probe_decode(
                             [ds.cls2id[str(a)] for a in b["answer"]], dtype=np.int64
                         )
                     labels_chunks.append(y_ids)
-                    questions_all.extend(texts)
                 else:
                     labels_chunks.append(b["label"])
+
+                # Collect questions for all task types
+                questions_all.extend(texts)
 
                 filenames_all.extend(b["filename"])
                 if config.decode:
@@ -198,25 +213,26 @@ def run_extract_probe_decode(
                 outdir / "decode_log.csv", "w", newline="", encoding="utf-8"
             ) as f:
                 w = csv.writer(f)
+                # Include question column for all task types
                 header = [
                     "idx",
                     "task",
                     "filename",
+                    "question",
                     "label_id",
                     "ground_truth",
                     "gen_text",
                     "gen_parsed",
+                    "correct",
                 ]
-                if is_multi:
-                    header.insert(3, "question")
-                header.append("correct")
                 w.writerow(header)
 
                 for i in range(len(y)):
-                    row = [i, task, filenames_all[i]]
-                    if is_multi:
-                        row += [questions_all[i]]
-                    row += [
+                    row = [
+                        i,
+                        task,
+                        filenames_all[i],
+                        questions_all[i],
                         int(y[i]),
                         gt_cls[i],
                         gen_texts_all[i],
@@ -251,7 +267,7 @@ def probe_all_tasks(
     seed: int = 0,
     max_iter: int = 2000,
     C: float = 1.0,
-    solver: str = "liblinear",
+    solver: str = "lbfgs",
     verbose: bool = True,
 ) -> pd.DataFrame:
     """
@@ -332,7 +348,7 @@ def _probe_task_dir(
     seed: int = 0,
     max_iter: int = 2000,
     C: float = 1.0,
-    solver: str = "liblinear",
+    solver: str = "lbfgs",
     verbose: bool = True,
 ) -> Dict[str, Dict]:
     """

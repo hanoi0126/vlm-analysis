@@ -45,7 +45,7 @@ def train_eval_probe(
     seed: int = 0,
     max_iter: int = 2000,
     C: float = 1.0,
-    solver: str = "liblinear",
+    solver: str = "lbfgs",
 ) -> Dict:
     """
     Train and evaluate linear probe with cross-validation.
