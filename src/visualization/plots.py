@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import FormatStrFormatter
 
-
 # Task colors (fixed for consistency)
 TASK_COLORS = {
     "color": mcolors.TABLEAU_COLORS["tab:blue"],
@@ -180,3 +179,154 @@ def plot_probe_curves_multi(
 
     if missing:
         print("[SKIP] metrics.json not found for:", ", ".join(missing))
+
+
+def plot_comparison(
+    results_root: Path,
+    tasks: List[str],
+    suffix_with_img: str = "_qwen3b_llmtap",
+    suffix_no_img: str = "_qwen3b_llmtap_noimage",
+    key_order: Optional[List[str]] = None,
+    title_suffix: str = "",
+) -> None:
+    """
+    Plot comparison between image-on and image-off experiments.
+
+    Args:
+        results_root: Results root directory
+        tasks: List of task names
+        suffix_with_img: Directory suffix for image-on results
+        suffix_no_img: Directory suffix for image-off results
+        key_order: Order of tap points (default: ['pre', 'post', 'l00', ...])
+        title_suffix: Additional title text
+    """
+    if key_order is None:
+        key_order = ["pre", "post"] + [f"l{i:02d}" for i in range(36)]
+
+    x = np.arange(len(key_order))
+
+    n_tasks = len(tasks)
+    fig_acc, axes_acc = plt.subplots(
+        n_tasks, 1, figsize=(14, 4 * n_tasks), squeeze=False
+    )
+    fig_auc, axes_auc = plt.subplots(
+        n_tasks, 1, figsize=(14, 4 * n_tasks), squeeze=False
+    )
+
+    for idx, task in enumerate(tasks):
+        ax_acc = axes_acc[idx, 0]
+        ax_auc = axes_auc[idx, 0]
+
+        # Load metrics for image-on
+        mpath_img = _find_metrics_path(Path(results_root), task, suffix_with_img)
+        # Load metrics for image-off
+        mpath_noimg = _find_metrics_path(Path(results_root), task, suffix_no_img)
+
+        if mpath_img is None and mpath_noimg is None:
+            ax_acc.text(0.5, 0.5, f"No data for {task}", ha="center", va="center")
+            ax_auc.text(0.5, 0.5, f"No data for {task}", ha="center", va="center")
+            continue
+
+        acc_curves = []
+        auc_curves = []
+
+        # Plot image-on
+        if mpath_img is not None:
+            metrics_img = json.loads(Path(mpath_img).read_text(encoding="utf-8"))
+            y_acc_img = np.array(
+                [
+                    metrics_img[k]["acc_mean"] if k in metrics_img else np.nan
+                    for k in key_order
+                ],
+                dtype=float,
+            )
+            y_auc_img = np.array(
+                [
+                    metrics_img[k]["auc_mean"] if k in metrics_img else np.nan
+                    for k in key_order
+                ],
+                dtype=float,
+            )
+
+            color = TASK_COLORS.get(task, "tab:blue")
+            ax_acc.plot(
+                x,
+                y_acc_img,
+                marker="o",
+                linestyle="-",
+                label="Image ON",
+                color=color,
+                linewidth=2,
+            )
+            ax_auc.plot(
+                x,
+                y_auc_img,
+                marker="o",
+                linestyle="-",
+                label="Image ON",
+                color=color,
+                linewidth=2,
+            )
+            acc_curves.append(y_acc_img)
+            auc_curves.append(y_auc_img)
+
+        # Plot image-off
+        if mpath_noimg is not None:
+            metrics_noimg = json.loads(Path(mpath_noimg).read_text(encoding="utf-8"))
+            y_acc_noimg = np.array(
+                [
+                    metrics_noimg[k]["acc_mean"] if k in metrics_noimg else np.nan
+                    for k in key_order
+                ],
+                dtype=float,
+            )
+            y_auc_noimg = np.array(
+                [
+                    metrics_noimg[k]["auc_mean"] if k in metrics_noimg else np.nan
+                    for k in key_order
+                ],
+                dtype=float,
+            )
+
+            ax_acc.plot(
+                x,
+                y_acc_noimg,
+                marker="s",
+                linestyle="--",
+                label="Image OFF (text-only)",
+                color="gray",
+                linewidth=2,
+            )
+            ax_auc.plot(
+                x,
+                y_auc_noimg,
+                marker="s",
+                linestyle="--",
+                label="Image OFF (text-only)",
+                color="gray",
+                linewidth=2,
+            )
+            acc_curves.append(y_acc_noimg)
+            auc_curves.append(y_auc_noimg)
+
+        # Format axes
+        for ax, what in [(ax_acc, "Accuracy"), (ax_auc, "ROC-AUC")]:
+            ax.set_xticks(x)
+            ax.set_xticklabels(key_order, rotation=90, fontsize=8)
+            ax.grid(True, linestyle="--", alpha=0.6)
+            ax.legend(loc="best")
+            title = f"{task} — {what}"
+            if title_suffix:
+                title += f" — {title_suffix}"
+            ax.set_title(title, fontsize=12, fontweight="bold")
+            ax.set_xlabel("Layer", fontsize=10)
+            ax.set_ylabel(what, fontsize=10)
+
+        _auto_ylim(ax_acc, acc_curves, clamp01=True)
+        _auto_ylim(ax_auc, auc_curves, clamp01=True)
+
+    fig_acc.tight_layout()
+    fig_auc.tight_layout()
+    plt.show()
+
+    print(f"Comparison plots generated for tasks: {', '.join(tasks)}")
