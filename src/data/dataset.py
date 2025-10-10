@@ -1,21 +1,30 @@
-"""Dataset classes for single and multi-object tasks."""
+"""Unified dataset class for single and multi-object tasks."""
 
 import csv
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
+try:
+    from datasets import load_dataset
 
-def _parse_json(s: Optional[str]) -> Optional[any]:
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
+
+
+def _parse_json(s: Optional[str]) -> Optional[Any]:
     """Parse JSON string safely."""
     if s is None or s == "":
         return None
-
-    return json.loads(s)
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 class SingleObjDataset(Dataset):
@@ -217,5 +226,310 @@ class MultiObjDataset(Dataset):
                 y = self.cls2id[str(sample["answer"])]
                 sample["label_id"] = np.int64(y)
                 sample["label_cls"] = self.id2cls[y]
+
+        return sample
+
+
+class UnifiedDataset(Dataset):
+    """Unified dataset for both single and multi-object tasks."""
+
+    def __init__(
+        self,
+        csv_path: str,
+        task: Optional[str] = None,
+        images_root: Optional[str] = None,
+    ) -> None:
+        """
+        Initialize unified dataset.
+
+        Auto-detects whether it's single-obj or multi-obj based on CSV structure.
+
+        Args:
+            csv_path: Path to CSV metadata file
+            task: Task name filter (optional)
+            images_root: Root directory for images (optional)
+        """
+        self.csv_path = Path(csv_path)
+
+        # Load CSV
+        with open(self.csv_path, newline="", encoding="utf-8") as f:
+            rows = [dict(r) for r in csv.DictReader(f)]
+
+        if not rows:
+            raise ValueError(f"Empty CSV: {csv_path}")
+
+        # Filter by task if specified
+        if task is not None:
+            rows = [r for r in rows if r.get("task") == task]
+            if not rows:
+                raise ValueError(f"No rows for task={task} in {csv_path}")
+
+        # Auto-detect dataset type
+        fieldset = set(rows[0].keys())
+
+        # Check if dataset has question field
+        # All tasks (both single-obj and multi-obj) now use question field
+        self.has_question = "question" in fieldset
+        self.has_description = "description" in fieldset
+
+        # Infer images root
+        sample_fp = Path(rows[0]["filepath"])
+        base = self.csv_path.parent
+        if images_root:
+            self.images_root = Path(images_root)
+        elif (base / sample_fp).exists():
+            self.images_root = base
+        elif (base.parent / sample_fp).exists():
+            self.images_root = base.parent
+        else:
+            self.images_root = base
+
+        self.rows = rows
+
+        # Build class mappings
+        if self.has_question:
+            # Multi-object: use answer field
+            opts, ans = [], []
+            for r in rows:
+                options = _parse_json(r.get("options"))
+                if options:
+                    opts.extend(options)
+                if r.get("label"):
+                    ans.append(str(r["label"]))
+            classes = sorted(set(opts)) if opts else sorted(set(ans))
+        else:
+            # Single-object: use label field
+            classes = sorted({r["label"] for r in rows if r.get("label")})
+
+        self.classes = classes
+        self.cls2id = {c: i for i, c in enumerate(classes)}
+        self.id2cls = {i: c for c, i in self.cls2id.items()}
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Get dataset item.
+
+        Returns unified format for both single and multi-object tasks.
+
+        Returns:
+            Dictionary containing:
+                - image: PIL Image
+                - label_id: integer label ID
+                - label_cls: string label class
+                - filename: image filename
+                - meta: full row metadata (includes description if available)
+                - question: question text (multi-obj only, None for single-obj)
+                - answer: answer text (multi-obj only, None for single-obj)
+        """
+        r = self.rows[idx]
+
+        # Load image
+        img_path = self.images_root / r["filepath"]
+        img = Image.open(img_path).convert("RGB")
+
+        # Parse label
+        label_str = r.get("label", "")
+        if label_str in self.cls2id:
+            label_id = self.cls2id[label_str]
+            label_cls = label_str
+        else:
+            label_id = -1
+            label_cls = None
+
+        # Build meta dictionary (includes description if present)
+        meta = dict(r)
+        meta["filename"] = Path(r["filepath"]).name
+
+        # Unified return format
+        sample = {
+            "image": img,
+            "label_id": np.int64(label_id),
+            "label_cls": label_cls,
+            "filename": meta["filename"],
+            "meta": meta,
+        }
+
+        # Add multi-object specific fields
+        if self.has_question:
+            sample["question"] = r.get("question")
+            sample["answer"] = r.get("label")
+            sample["options"] = _parse_json(r.get("options"))
+        else:
+            sample["question"] = None
+            sample["answer"] = None
+            sample["options"] = None
+
+        return sample
+
+
+class HuggingFaceDataset(Dataset):
+    """Dataset wrapper for HuggingFace datasets."""
+
+    def __init__(
+        self,
+        dataset_name: str,
+        split: str = "train",
+        subset: Optional[str] = None,
+        task: Optional[str] = None,
+        image_column: str = "image",
+        label_column: str = "label",
+        task_column: str = "task",
+        cache_dir: Optional[str] = None,
+    ) -> None:
+        """
+        Initialize HuggingFace dataset.
+
+        Args:
+            dataset_name: HuggingFace dataset name (e.g., 'username/dataset-name')
+            split: Dataset split to use (default: 'train')
+            subset: Dataset subset/config name (optional)
+            task: Task name filter (optional)
+            image_column: Name of the image column
+            label_column: Name of the label column
+            task_column: Name of the task column
+            cache_dir: Cache directory for downloaded datasets
+        """
+        if not HF_AVAILABLE:
+            raise ImportError(
+                "datasets library is not installed. "
+                "Please install it with: pip install datasets"
+            )
+
+        # Load dataset from HuggingFace
+        self.dataset_name = dataset_name
+        self.split = split
+        self.subset = subset
+
+        print(
+            f"Loading HuggingFace dataset: {dataset_name} (split={split}, subset={subset})"
+        )
+        self.hf_dataset = load_dataset(
+            dataset_name,
+            name=subset,
+            split=split,
+            cache_dir=cache_dir,
+            verification_mode="no_checks",  # Skip verification to avoid 'all' split conflict
+        )
+
+        self.image_column = image_column
+        self.label_column = label_column
+        self.task_column = task_column
+
+        # Filter by task if specified
+        if task is not None and task_column in self.hf_dataset.column_names:
+            self.hf_dataset = self.hf_dataset.filter(
+                lambda x: x.get(task_column) == task
+            )
+            print(f"Filtered to task '{task}': {len(self.hf_dataset)} samples")
+
+        if len(self.hf_dataset) == 0:
+            raise ValueError(f"No samples found (task={task})")
+
+        # Detect dataset structure
+        self.column_names = self.hf_dataset.column_names
+
+        # Check if dataset has question field
+        # All tasks (both single-obj and multi-obj) now use question field
+        self.has_question = "question" in self.column_names
+        self.has_description = "description" in self.column_names
+
+        # Build class mappings
+        if self.has_question:
+            # Multi-object: use answer/label field
+            labels = []
+            for item in self.hf_dataset:
+                label = item.get(label_column)
+                if label is not None:
+                    labels.append(str(label))
+            classes = sorted(set(labels))
+        else:
+            # Single-object: use label field
+            labels = [
+                item.get(label_column)
+                for item in self.hf_dataset
+                if item.get(label_column) is not None
+            ]
+            classes = sorted(set(labels))
+
+        self.classes = classes
+        self.cls2id = {c: i for i, c in enumerate(classes)}
+        self.id2cls = {i: c for c, i in self.cls2id.items()}
+
+    def __len__(self) -> int:
+        return len(self.hf_dataset)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Get dataset item.
+
+        Returns unified format compatible with UnifiedDataset.
+
+        Returns:
+            Dictionary containing:
+                - image: PIL Image
+                - label_id: integer label ID
+                - label_cls: string label class
+                - filename: image filename (or index as string)
+                - meta: full item metadata
+                - question: question text (multi-obj only)
+                - answer: answer text (multi-obj only)
+        """
+        item = self.hf_dataset[idx]
+
+        # Load image
+        img = item.get(self.image_column)
+        if img is None:
+            raise ValueError(f"Image column '{self.image_column}' not found")
+
+        # Ensure PIL Image
+        if not isinstance(img, Image.Image):
+            if isinstance(img, (str, Path)):
+                img = Image.open(img).convert("RGB")
+            else:
+                # Try to convert from other formats (numpy array, etc.)
+                img = (
+                    Image.fromarray(img).convert("RGB")
+                    if hasattr(img, "shape")
+                    else img
+                )
+
+        # Parse label
+        label_str = str(item.get(self.label_column, ""))
+        if label_str in self.cls2id:
+            label_id = self.cls2id[label_str]
+            label_cls = label_str
+        else:
+            label_id = -1
+            label_cls = None
+
+        # Build meta dictionary
+        meta = dict(item)
+        # Use image_id or index as filename
+        filename = item.get("image_id", item.get("filename", f"hf_{idx}"))
+        if not isinstance(filename, str):
+            filename = str(filename)
+        meta["filename"] = filename
+
+        # Unified return format
+        sample = {
+            "image": img,
+            "label_id": np.int64(label_id),
+            "label_cls": label_cls,
+            "filename": filename,
+            "meta": meta,
+        }
+
+        # Add multi-object specific fields
+        if self.has_question:
+            sample["question"] = item.get("question")
+            sample["answer"] = item.get(self.label_column)
+            sample["options"] = item.get("options")
+        else:
+            sample["question"] = None
+            sample["answer"] = None
+            sample["options"] = None
 
         return sample
