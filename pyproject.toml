@@ -1,5 +1,5 @@
 [project]
-name = "vlm-layer-wise-analysis"
+name = "vlm-analysis"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"

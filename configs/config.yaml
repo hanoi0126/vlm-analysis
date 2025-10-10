@@ -62,7 +62,7 @@ probe:
 # Output Configuration
 # ----------------------------------------------------------------------------
 output:
-  results_root: /work/gb20/b20070/vlm-layer-wise-analysis/results
+  results_root: /work/gb20/b20070/vlm-analysis/results
   save_features: true
   save_plots: true
   suffix: _qwen3b_llmtap

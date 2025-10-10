@@ -15,7 +15,7 @@ module load gcc/12.2.0
 source venv/bin/activate
 source jobs/import-env.sh .env
 
-cd /work/gb20/b20070/vlm-layer-wise-analysis
+cd /work/gb20/b20070/vlm-analysis
 
 # create log directory
 LOG_DIR="logs/comparison/$(date '+%Y-%m-%d/%H-%M-%S')"
