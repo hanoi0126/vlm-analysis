@@ -265,29 +265,35 @@ def main(cfg: DictConfig) -> None:
                 task_output_dir = cross_cond_root / task
                 summary_path = task_output_dir / "cross_condition_summary.npz"
 
+                # Create plots directory
+                plots_dir = task_output_dir / "plots"
+                plots_dir.mkdir(parents=True, exist_ok=True)
+
                 if summary_path.exists():
                     summary_data = np.load(summary_path)
 
                     # Plot accuracy gaps
+                    gap_plot_path = plots_dir / "cross_condition_gaps.png"
                     plot_cross_condition_gaps(
                         layers=summary_data["layers"],
                         gap_A_to_B=summary_data["A_gap"],
                         gap_B_to_A=summary_data["B_gap"],
                         task=task,
                         title_suffix=f"{config.model.model_id}",
+                        output_path=str(gap_plot_path),
                     )
-                    print(f"  Generated gap plot for {task}")
 
                     # Plot cross-condition matrix for selected layers
-                    selected_layers = ["l08", "l16", "l24"]
+                    selected_layers = [f"l{i:02d}" for i in range(36)]
                     for layer in selected_layers:
                         if layer in task_results:
+                            matrix_plot_path = plots_dir / f"cross_condition_matrix_{layer}.png"
                             plot_cross_condition_matrix(
                                 task=task,
                                 layer=layer,
                                 metrics=task_results[layer],
+                                output_path=str(matrix_plot_path),
                             )
-                            print(f"  Generated matrix plot for {task} - {layer}")
 
         except Exception as e:
             print(f"[WARN] Failed to generate plots: {e}")

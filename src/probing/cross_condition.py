@@ -6,12 +6,21 @@ This module implements cross-condition probe training and evaluation:
 - Calculate cross-condition accuracy gap as a measure of space similarity
 """
 
+import warnings
+
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
 
 from src.probing.trainer import safe_macro_ovr_auc
+
+# Suppress sklearn FutureWarning about liblinear solver
+warnings.filterwarnings(
+    action="ignore",
+    category=FutureWarning,
+    module="sklearn.linear_model._logistic",
+)
 
 
 def train_cross_condition_probe(  # noqa: PLR0913

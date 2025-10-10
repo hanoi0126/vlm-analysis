@@ -1,12 +1,20 @@
 """Probing trainer for evaluating layer representations."""
 
 import contextlib
+import warnings
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
+
+# Suppress sklearn FutureWarning about liblinear solver
+warnings.filterwarnings(
+    action="ignore",
+    category=FutureWarning,
+    module="sklearn.linear_model._logistic",
+)
 
 
 def safe_macro_ovr_auc(

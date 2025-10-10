@@ -320,6 +320,7 @@ def plot_cross_condition_gaps(  # noqa: PLR0913
     task: str,
     title_suffix: str = "",
     figsize: tuple[float, float] = (14, 6),
+    output_path: str | None = None,
 ) -> None:
     """
     Plot cross-condition accuracy gaps across layers.
@@ -331,6 +332,7 @@ def plot_cross_condition_gaps(  # noqa: PLR0913
         task: Task name
         title_suffix: Additional title text
         figsize: Figure size
+        output_path: Path to save the plot (if None, only display)
     """
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -379,7 +381,13 @@ def plot_cross_condition_gaps(  # noqa: PLR0913
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
 
     fig.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved plot to: {output_path}")
+
     plt.show()
+    plt.close(fig)
 
 
 def plot_cross_condition_matrix(
@@ -387,6 +395,7 @@ def plot_cross_condition_matrix(
     layer: str,
     metrics: dict,
     figsize: tuple[float, float] = (10, 5),
+    output_path: str | None = None,
 ) -> None:
     """
     Plot cross-condition accuracy matrix for a specific task and layer.
@@ -401,6 +410,7 @@ def plot_cross_condition_matrix(
         layer: Layer name
         metrics: Metrics dict with keys "A_to_B" and "B_to_A"
         figsize: Figure size
+        output_path: Path to save the plot (if None, only display)
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
@@ -473,4 +483,10 @@ def plot_cross_condition_matrix(
     fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
 
     fig.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved plot to: {output_path}")
+
     plt.show()
+    plt.close(fig)
