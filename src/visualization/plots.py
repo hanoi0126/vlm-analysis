@@ -311,3 +311,166 @@ def plot_comparison(  # noqa: PLR0913
     plt.show()
 
     print(f"Comparison plots generated for tasks: {', '.join(tasks)}")
+
+
+def plot_cross_condition_gaps(  # noqa: PLR0913
+    layers: np.ndarray,
+    gap_A_to_B: np.ndarray,  # noqa: N803
+    gap_B_to_A: np.ndarray,  # noqa: N803
+    task: str,
+    title_suffix: str = "",
+    figsize: tuple[float, float] = (14, 6),
+) -> None:
+    """
+    Plot cross-condition accuracy gaps across layers.
+
+    Args:
+        layers: Layer names (L,)
+        gap_A_to_B: Accuracy gap when training on A and testing on B (L,)
+        gap_B_to_A: Accuracy gap when training on B and testing on A (L,)
+        task: Task name
+        title_suffix: Additional title text
+        figsize: Figure size
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+
+    x = np.arange(len(layers))
+
+    # Plot gaps
+    color_A = TASK_COLORS.get(task, "tab:blue")  # noqa: N806
+    ax.plot(
+        x,
+        gap_A_to_B,
+        marker="o",
+        linestyle="-",
+        label="ImageON → ImageOFF",
+        color=color_A,
+        linewidth=2,
+        markersize=6,
+    )
+    ax.plot(
+        x,
+        gap_B_to_A,
+        marker="s",
+        linestyle="--",
+        label="ImageOFF → ImageON",
+        color="gray",
+        linewidth=2,
+        markersize=6,
+    )
+
+    # Add zero line
+    ax.axhline(0, color="black", linestyle=":", linewidth=1, alpha=0.5)
+
+    # Format axes
+    ax.set_xticks(x)
+    ax.set_xticklabels(layers, rotation=90, fontsize=8)
+    ax.grid(visible=True, linestyle="--", alpha=0.6)
+    ax.legend(loc="best")
+
+    title = f"Cross-condition Accuracy Gap — {task}"
+    if title_suffix:
+        title += f" — {title_suffix}"
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xlabel("Layer", fontsize=10)
+    ax.set_ylabel("Accuracy Gap (same - cross)", fontsize=10)
+
+    # Set y-axis formatter
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_cross_condition_matrix(
+    task: str,
+    layer: str,
+    metrics: dict,
+    figsize: tuple[float, float] = (10, 5),
+) -> None:
+    """
+    Plot cross-condition accuracy matrix for a specific task and layer.
+
+    Shows a 2x2 matrix:
+             Test: ImageON  |  Test: ImageOFF
+    Train: ImageON      acc_same    |    acc_cross
+    Train: ImageOFF     acc_cross   |    acc_same
+
+    Args:
+        task: Task name
+        layer: Layer name
+        metrics: Metrics dict with keys "A_to_B" and "B_to_A"
+        figsize: Figure size
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+
+    # Extract metrics
+    A_to_B = metrics.get("A_to_B", {})  # noqa: N806
+    B_to_A = metrics.get("B_to_A", {})  # noqa: N806
+
+    # Matrix 1: Accuracy
+    acc_matrix = np.array(
+        [
+            [A_to_B.get("same_condition_acc", np.nan), A_to_B.get("cross_condition_acc", np.nan)],
+            [B_to_A.get("cross_condition_acc", np.nan), B_to_A.get("same_condition_acc", np.nan)],
+        ]
+    )
+
+    # Matrix 2: AUC
+    auc_matrix = np.array(
+        [
+            [A_to_B.get("same_condition_auc", np.nan), A_to_B.get("cross_condition_auc", np.nan)],
+            [B_to_A.get("cross_condition_auc", np.nan), B_to_A.get("same_condition_auc", np.nan)],
+        ]
+    )
+
+    # Plot accuracy matrix
+    im1 = ax1.imshow(acc_matrix, cmap="RdYlGn", vmin=0.0, vmax=1.0, aspect="auto")
+    ax1.set_xticks([0, 1])
+    ax1.set_xticklabels(["Test: ImageON", "Test: ImageOFF"])
+    ax1.set_yticks([0, 1])
+    ax1.set_yticklabels(["Train: ImageON", "Train: ImageOFF"])
+    ax1.set_title(f"Accuracy — {task} — {layer}", fontweight="bold")
+
+    # Add text annotations
+    for i in range(2):
+        for j in range(2):
+            ax1.text(
+                j,
+                i,
+                f"{acc_matrix[i, j]:.3f}",
+                ha="center",
+                va="center",
+                color="black",
+                fontsize=14,
+                fontweight="bold",
+            )
+
+    fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+
+    # Plot AUC matrix
+    im2 = ax2.imshow(auc_matrix, cmap="RdYlGn", vmin=0.0, vmax=1.0, aspect="auto")
+    ax2.set_xticks([0, 1])
+    ax2.set_xticklabels(["Test: ImageON", "Test: ImageOFF"])
+    ax2.set_yticks([0, 1])
+    ax2.set_yticklabels(["Train: ImageON", "Train: ImageOFF"])
+    ax2.set_title(f"AUC — {task} — {layer}", fontweight="bold")
+
+    # Add text annotations
+    for i in range(2):
+        for j in range(2):
+            ax2.text(
+                j,
+                i,
+                f"{auc_matrix[i, j]:.3f}",
+                ha="center",
+                va="center",
+                color="black",
+                fontsize=14,
+                fontweight="bold",
+            )
+
+    fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+
+    fig.tight_layout()
+    plt.show()

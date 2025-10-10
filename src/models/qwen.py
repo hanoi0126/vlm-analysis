@@ -47,7 +47,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
             device_map="auto",
         )
-        self.model.eval()
+        self.model.eval()  # type: ignore[no-untyped-call]
 
         # Load processor
         self.processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
