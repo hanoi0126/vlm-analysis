@@ -190,58 +190,58 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
     @torch.no_grad()
     def forward(
         self,
-        images: List,
+        images: Optional[List] = None,  # Optional に変更
         texts: Optional[List[str]] = None,
         *,
+        use_image: bool = True,  # 新規パラメータ
         decode: bool = False,
         max_new_tokens: int = 32,
         do_sample: bool = False,
         generation_kwargs: Optional[Dict] = None,
     ) -> TapOutput:
-        """
-        Extract features from images and texts.
-
-        Args:
-            images: List of PIL images
-            texts: List of text prompts
-            decode: Whether to decode generated text
-            max_new_tokens: Max new tokens for generation
-            do_sample: Use sampling
-            generation_kwargs: Additional generation kwargs
-
-        Returns:
-            TapOutput with extracted features
-        """
+        """Extract features with or without images."""
         if texts is None:
-            texts = [""] * len(images)
+            texts = [""] * (len(images) if images else 1)
 
-        # Prepare input using chat template
-        msgs = [
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": img},
-                        {"type": "text", "text": t},
-                    ],
-                }
+        # Chat template の構築を use_image で分岐
+        if use_image:
+            if images is None:
+                raise ValueError("use_image=True requires images")
+            msgs = [
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": img},
+                            {"type": "text", "text": t},
+                        ],
+                    }
+                ]
+                for img, t in zip(images, texts)
             ]
-            for img, t in zip(images, texts)
-        ]
+        else:
+            # テキストのみ
+            msgs = [
+                [{"role": "user", "content": [{"type": "text", "text": t}]}]
+                for t in texts
+            ]
         templated = [
             self.processor.apply_chat_template(
                 m, tokenize=False, add_generation_prompt=True
             )
             for m in msgs
         ]
-        batch = self.processor(
-            text=templated, images=images, return_tensors="pt", padding=True
-        )
+        if use_image:
+            batch = self.processor(
+                text=templated, images=images, return_tensors="pt", padding=True
+            )
+        else:
+            batch = self.processor(text=templated, return_tensors="pt", padding=True)
         batch = {k: v.to(self.device) for k, v in batch.items()}
 
         # Extract features (pre/post/layers)
         self._tap = TapOutput()
-        self._last_bs = len(images)
+        self._last_bs = len(images) if images is not None else len(texts)
         self._last_attn = batch.get("attention_mask", None)
         self._capture_enabled = True
         _ = self.model(**batch, output_hidden_states=False, return_dict=True)
@@ -322,8 +322,6 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         if self.llm_layers == "all":
             # Assuming 36 layers for Qwen2.5-VL-3B
             points += [f"l{i:02d}" for i in range(36)]
-            points += [f"l{i:02d}_outavg" for i in range(36)]
         elif isinstance(self.llm_layers, list):
             points += [f"l{i:02d}" for i in self.llm_layers]
-            points += [f"l{i:02d}_outavg" for i in self.llm_layers]
         return points
