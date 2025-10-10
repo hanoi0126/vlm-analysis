@@ -1,7 +1,7 @@
 """Script for image vs text-only comparison experiment."""
 
-import sys
 from pathlib import Path
+import sys
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -35,15 +35,13 @@ def main(cfg: DictConfig) -> None:
     print("=" * 80)
 
     # Convert to Pydantic model for validation
-    config = Config(**OmegaConf.to_container(cfg, resolve=True))
+    config = Config(**OmegaConf.to_container(cfg, resolve=True))  # type: ignore[arg-type]
 
     # Create feature extractor
     print(f"\nLoading model: {config.model.model_id}")
     extractor = create_extractor(config.model)
     print("Model loaded successfully")
-    print(
-        f"Tap points: {extractor.get_tap_points()[:5]}... ({len(extractor.get_tap_points())} total)"
-    )
+    print(f"Tap points: {extractor.get_tap_points()[:5]}... ({len(extractor.get_tap_points())} total)")
 
     # =========================================================================
     # Part 1: Run with images (Image ON)
@@ -73,7 +71,7 @@ def main(cfg: DictConfig) -> None:
         n_folds=config.probe.n_folds,
         seed=config.probe.seed,
         max_iter=config.probe.max_iter,
-        C=config.probe.C,
+        c_value=config.probe.C,
         solver=config.probe.solver,
         verbose=True,
     )
@@ -108,7 +106,7 @@ def main(cfg: DictConfig) -> None:
         n_folds=config.probe.n_folds,
         seed=config.probe.seed,
         max_iter=config.probe.max_iter,
-        C=config.probe.C,
+        c_value=config.probe.C,
         solver=config.probe.solver,
         verbose=True,
     )
