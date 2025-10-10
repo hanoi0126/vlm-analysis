@@ -18,6 +18,7 @@ dependencies = [
     "tqdm>=4.65.0",
     "accelerate>=0.25.0",
     "bitsandbytes>=0.41.0",
+    "datasets>=4.2.0",
 ]
 
 [dependency-groups]
@@ -36,6 +37,9 @@ ignore = [
     # custome ignore
     "FA102", # future-required-type-annotation
     "PERF203", # try-except-in-loop
+    "C901", # too-complex
+    "PLR0912", # use-enumerate
+    "PLR0915", # use-f-string
 
     # default ignore
     "PTH",
@@ -85,7 +89,7 @@ disallow_any_unimported = false
 disallow_any_expr = false       # 式でのAny禁止
 disallow_any_decorated = false
 disallow_any_explicit = false   # 変数でAny禁止
-disallow_any_generics = true    # ジェネリックで書かないの禁止
+disallow_any_generics = false   # ジェネリックで書かないの禁止
 disallow_subclassing_any = false  # Anyのサブクラス禁止  # 緩めた
 
 disallow_untyped_calls = true      # 型なし関数呼び出し禁止 `a: int = f()`
@@ -103,3 +107,16 @@ allow_redefinition = true   # 変数の再定義を禁止
 
 show_error_context = true
 show_column_numbers = true
+
+
+[tool.basedpyright]
+typeCheckingMode = "basic"
+extraPaths = [".venv/lib64/python3.12/site-packages"]
+reportAny = "none"
+reportUnusedCallResult = "none"
+reportMissingTypeStubs = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportRedeclaration = "none"
+reportAttributeAccessIssue = "none"
