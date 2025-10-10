@@ -2,12 +2,11 @@
 
 import json
 from pathlib import Path
-from typing import List, Optional
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-import numpy as np
 from matplotlib.ticker import FormatStrFormatter
+import numpy as np
 
 # Task colors (fixed for consistency)
 TASK_COLORS = {
@@ -37,7 +36,7 @@ def _find_metrics_path(
     results_root: Path,
     task: str,
     suffix: str,
-) -> Optional[Path]:
+) -> Path | None:
     """
     Find metrics.json path for a task.
 
@@ -60,7 +59,7 @@ def _find_metrics_path(
 
 def _auto_ylim(
     ax: plt.Axes,
-    curves: List[np.ndarray],
+    curves: list[np.ndarray],
     clamp01: bool = False,
 ) -> None:
     """
@@ -74,7 +73,7 @@ def _auto_ylim(
     vals = []
     for y in curves:
         if y is None:
-            continue
+            continue  # type: ignore[unreachable]
         yv = np.asarray(y, dtype=float)
         yv = yv[np.isfinite(yv)]
         yv = yv[~np.isnan(yv)]
@@ -102,11 +101,11 @@ def _auto_ylim(
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
 
 
-def plot_probe_curves_multi(
+def plot_probe_curves_multi(  # noqa: PLR0913
     results_root: Path,
-    tasks: List[str],
+    tasks: list[str],
     suffix: str = "_qwen3b_llmtap",
-    key_order: Optional[List[str]] = None,
+    key_order: list[str] | None = None,
     title_suffix: str = "",
     show_legend: bool = True,
 ) -> None:
@@ -129,9 +128,9 @@ def plot_probe_curves_multi(
     fig_acc, ax_acc = plt.subplots(figsize=(12, 6))
     fig_auc, ax_auc = plt.subplots(figsize=(12, 6))
 
-    acc_curves: List[np.ndarray] = []
-    auc_curves: List[np.ndarray] = []
-    missing: List[str] = []
+    acc_curves: list[np.ndarray] = []
+    auc_curves: list[np.ndarray] = []
+    missing: list[str] = []
 
     for task in tasks:
         mpath = _find_metrics_path(Path(results_root), task, suffix)
@@ -150,7 +149,7 @@ def plot_probe_curves_multi(
             dtype=float,
         )
 
-        color = TASK_COLORS.get(task, None)
+        color = TASK_COLORS.get(task)
         marker = TASK_MARKERS.get(task, "o")
 
         ax_acc.plot(x, y_acc, marker=marker, linestyle="-", label=task, color=color)
@@ -163,12 +162,10 @@ def plot_probe_curves_multi(
     for ax, what in [(ax_acc, "Accuracy (mean)"), (ax_auc, "ROC-AUC (mean)")]:
         ax.set_xticks(x)
         ax.set_xticklabels(key_order, rotation=90)
-        ax.grid(True, linestyle="--", alpha=0.6)
+        ax.grid(visible=True, linestyle="--", alpha=0.6)
         if show_legend:
             ax.legend(title="task")
-        ax.set_title(
-            f"Probing — {what}" + (f" — {title_suffix}" if title_suffix else "")
-        )
+        ax.set_title(f"Probing — {what}" + (f" — {title_suffix}" if title_suffix else ""))
 
     _auto_ylim(ax_acc, acc_curves, clamp01=True)
     _auto_ylim(ax_auc, auc_curves, clamp01=True)
@@ -181,12 +178,12 @@ def plot_probe_curves_multi(
         print("[SKIP] metrics.json not found for:", ", ".join(missing))
 
 
-def plot_comparison(
+def plot_comparison(  # noqa: PLR0913
     results_root: Path,
-    tasks: List[str],
+    tasks: list[str],
     suffix_with_img: str = "_qwen3b_llmtap",
     suffix_no_img: str = "_qwen3b_llmtap_noimage",
-    key_order: Optional[List[str]] = None,
+    key_order: list[str] | None = None,
     title_suffix: str = "",
 ) -> None:
     """
@@ -206,12 +203,8 @@ def plot_comparison(
     x = np.arange(len(key_order))
 
     n_tasks = len(tasks)
-    fig_acc, axes_acc = plt.subplots(
-        n_tasks, 1, figsize=(14, 4 * n_tasks), squeeze=False
-    )
-    fig_auc, axes_auc = plt.subplots(
-        n_tasks, 1, figsize=(14, 4 * n_tasks), squeeze=False
-    )
+    fig_acc, axes_acc = plt.subplots(n_tasks, 1, figsize=(14, 4 * n_tasks), squeeze=False)
+    fig_auc, axes_auc = plt.subplots(n_tasks, 1, figsize=(14, 4 * n_tasks), squeeze=False)
 
     for idx, task in enumerate(tasks):
         ax_acc = axes_acc[idx, 0]
@@ -234,17 +227,11 @@ def plot_comparison(
         if mpath_img is not None:
             metrics_img = json.loads(Path(mpath_img).read_text(encoding="utf-8"))
             y_acc_img = np.array(
-                [
-                    metrics_img[k]["acc_mean"] if k in metrics_img else np.nan
-                    for k in key_order
-                ],
+                [metrics_img[k]["acc_mean"] if k in metrics_img else np.nan for k in key_order],
                 dtype=float,
             )
             y_auc_img = np.array(
-                [
-                    metrics_img[k]["auc_mean"] if k in metrics_img else np.nan
-                    for k in key_order
-                ],
+                [metrics_img[k]["auc_mean"] if k in metrics_img else np.nan for k in key_order],
                 dtype=float,
             )
 
@@ -274,17 +261,11 @@ def plot_comparison(
         if mpath_noimg is not None:
             metrics_noimg = json.loads(Path(mpath_noimg).read_text(encoding="utf-8"))
             y_acc_noimg = np.array(
-                [
-                    metrics_noimg[k]["acc_mean"] if k in metrics_noimg else np.nan
-                    for k in key_order
-                ],
+                [metrics_noimg[k]["acc_mean"] if k in metrics_noimg else np.nan for k in key_order],
                 dtype=float,
             )
             y_auc_noimg = np.array(
-                [
-                    metrics_noimg[k]["auc_mean"] if k in metrics_noimg else np.nan
-                    for k in key_order
-                ],
+                [metrics_noimg[k]["auc_mean"] if k in metrics_noimg else np.nan for k in key_order],
                 dtype=float,
             )
 
@@ -313,7 +294,7 @@ def plot_comparison(
         for ax, what in [(ax_acc, "Accuracy"), (ax_auc, "ROC-AUC")]:
             ax.set_xticks(x)
             ax.set_xticklabels(key_order, rotation=90, fontsize=8)
-            ax.grid(True, linestyle="--", alpha=0.6)
+            ax.grid(visible=True, linestyle="--", alpha=0.6)
             ax.legend(loc="best")
             title = f"{task} — {what}"
             if title_suffix:
