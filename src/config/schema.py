@@ -20,8 +20,25 @@ class ModelConfig(BaseModel):
 class DatasetConfig(BaseModel):
     """Dataset configuration."""
 
-    dataset_dir: Path = Field(..., description="Dataset directory path")
+    # Local dataset (CSV-based)
+    dataset_dir: Optional[Path] = Field(
+        None, description="Dataset directory path (for local CSV)"
+    )
     csv_filename: str = Field("ALL_metadata.csv", description="CSV filename")
+
+    # HuggingFace dataset
+    hf_dataset: Optional[str] = Field(
+        None, description="HuggingFace dataset name (e.g., 'username/dataset-name')"
+    )
+    hf_split: str = Field("train", description="HuggingFace dataset split")
+    hf_subset: Optional[str] = Field(
+        None, description="HuggingFace dataset subset/config name"
+    )
+
+    # Image column names for HF datasets
+    image_column: str = Field("image", description="Image column name in HF dataset")
+    label_column: str = Field("label", description="Label column name in HF dataset")
+    task_column: str = Field("task", description="Task column name in HF dataset")
 
 
 class ExperimentConfig(BaseModel):
@@ -29,7 +46,8 @@ class ExperimentConfig(BaseModel):
 
     tasks: List[str] = Field(..., description="List of tasks to run")
     task_prompts: Optional[Dict[str, str]] = Field(
-        None, description="Prompts for single-obj tasks"
+        None,
+        description="[Deprecated] Prompts for single-obj tasks (now uses 'question' field from dataset)",
     )
 
 
@@ -40,7 +58,7 @@ class ProbeConfig(BaseModel):
     seed: int = Field(0, description="Random seed")
     max_iter: int = Field(2000, description="Max iterations for LogisticRegression")
     C: float = Field(1.0, description="Inverse regularization strength")
-    solver: str = Field("liblinear", description="Solver for LogisticRegression")
+    solver: str = Field("lbfgs", description="Solver for LogisticRegression")
 
 
 class OutputConfig(BaseModel):
