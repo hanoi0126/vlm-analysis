@@ -17,7 +17,7 @@ TASK_COLORS = {
     "size": mcolors.TABLEAU_COLORS["tab:purple"],
     "count": mcolors.TABLEAU_COLORS["tab:brown"],
     "position": mcolors.TABLEAU_COLORS["tab:pink"],
-    "occlusion": mcolors.TABLEAU_COLORS["tab:gray"],
+    "occlusion": mcolors.TABLEAU_COLORS["tab:olive"],
 }
 
 TASK_MARKERS = {
@@ -376,6 +376,111 @@ def plot_cross_condition_gaps(  # noqa: PLR0913
     ax.set_title(title, fontsize=12, fontweight="bold")
     ax.set_xlabel("Layer", fontsize=10)
     ax.set_ylabel("Accuracy Gap (same - cross)", fontsize=10)
+
+    # Set y-axis formatter
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+
+    fig.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved plot to: {output_path}")
+
+    plt.show()
+    plt.close(fig)
+
+
+def plot_cross_condition_prober_accuracy(  # noqa: PLR0913
+    layers: np.ndarray,
+    A_same_acc: np.ndarray,  # noqa: N803
+    A_cross_acc: np.ndarray,  # noqa: N803
+    B_cross_acc: np.ndarray,  # noqa: N803
+    B_same_acc: np.ndarray,  # noqa: N803
+    task: str,
+    title_suffix: str = "",
+    figsize: tuple[float, float] = (14, 6),
+    output_path: str | None = None,
+) -> None:
+    """
+    Plot cross-condition accuracies for Image and Text probers.
+
+    Args:
+        layers: Layer names (L,)
+        A_same_acc: Accuracy when training on Image ON and testing on Image ON (L,)
+        A_cross_acc: Accuracy when training on Image ON and testing on Image OFF (L,)
+        B_cross_acc: Accuracy when training on Image OFF and testing on Image ON (L,)
+        B_same_acc: Accuracy when training on Image OFF and testing on Image OFF (L,)
+        task: Task name
+        title_suffix: Additional title text
+        figsize: Figure size
+        output_path: Path to save the plot (if None, only display)
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+
+    x = np.arange(len(layers))
+
+    # Color scheme: ImageProber (Image ON) and TextProber (Image OFF)
+    color_image = TASK_COLORS.get(task, "tab:blue")
+    color_text = "gray"
+
+    # Plot ImageProber lines (trained on Image ON)
+    # Same condition: solid line, Cross condition: dashed line
+    ax.plot(
+        x,
+        A_same_acc,
+        marker="o",
+        linestyle="-",
+        label="ImageProber → ImageON",
+        color=color_image,
+        linewidth=2,
+        markersize=6,
+    )
+    ax.plot(
+        x,
+        A_cross_acc,
+        marker="o",
+        linestyle="--",
+        label="ImageProber → ImageOFF",
+        color=color_image,
+        linewidth=2,
+        markersize=6,
+    )
+
+    # Plot TextProber lines (trained on Image OFF)
+    # Cross condition: dashed line, Same condition: solid line
+    ax.plot(
+        x,
+        B_cross_acc,
+        marker="s",
+        linestyle="--",
+        label="TextProber → ImageON",
+        color=color_text,
+        linewidth=2,
+        markersize=6,
+    )
+    ax.plot(
+        x,
+        B_same_acc,
+        marker="s",
+        linestyle="-",
+        label="TextProber → ImageOFF",
+        color=color_text,
+        linewidth=2,
+        markersize=6,
+    )
+
+    # Format axes
+    ax.set_xticks(x)
+    ax.set_xticklabels(layers, rotation=90, fontsize=8)
+    ax.grid(visible=True, linestyle="--", alpha=0.6)
+    ax.legend(loc="best")
+
+    title = f"Cross-condition Accuracy — {task}"
+    if title_suffix:
+        title += f" — {title_suffix}"
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xlabel("Layer", fontsize=10)
+    ax.set_ylabel("Accuracy", fontsize=10)
 
     # Set y-axis formatter
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))

@@ -22,7 +22,11 @@ from src.probing.cross_condition import (
     cross_condition_probe_all_layers,
     summarize_cross_condition_results,
 )
-from src.visualization import plot_cross_condition_gaps, plot_cross_condition_matrix
+from src.visualization import (
+    plot_cross_condition_gaps,
+    plot_cross_condition_matrix,
+    plot_cross_condition_prober_accuracy,
+)
 
 # Minimum feature dimension for probing
 MIN_FEATURE_DIM = 2
@@ -281,6 +285,19 @@ def main(cfg: DictConfig) -> None:
                         task=task,
                         title_suffix=f"{config.model.model_id}",
                         output_path=str(gap_plot_path),
+                    )
+
+                    # Plot prober accuracies
+                    prober_acc_plot_path = plots_dir / "cross_condition_prober_accuracy.png"
+                    plot_cross_condition_prober_accuracy(
+                        layers=summary_data["layers"],
+                        A_same_acc=summary_data["A_same_acc"],
+                        A_cross_acc=summary_data["A_cross_acc"],
+                        B_cross_acc=summary_data["B_cross_acc"],
+                        B_same_acc=summary_data["B_same_acc"],
+                        task=task,
+                        title_suffix=f"{config.model.model_id}",
+                        output_path=str(prober_acc_plot_path),
                     )
 
                     # Plot cross-condition matrix for selected layers

@@ -6,6 +6,7 @@ from .plots import (
     plot_comparison,
     plot_cross_condition_gaps,
     plot_cross_condition_matrix,
+    plot_cross_condition_prober_accuracy,
     plot_probe_curves_multi,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "plot_comparison",
     "plot_cross_condition_gaps",
     "plot_cross_condition_matrix",
+    "plot_cross_condition_prober_accuracy",
     "plot_probe_curves_multi",
 ]
