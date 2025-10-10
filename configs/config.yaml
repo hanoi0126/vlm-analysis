@@ -1,19 +1,75 @@
-# Main configuration file
-defaults:
-  - model: qwen_3b
-  - dataset: multi_obj_v1
-  - experiment: multi_obj
-  - probe: default
-  - _self_
+# ============================================================================
+# VLM Layer-wise Analysis Configuration
+# ============================================================================
 
-# Output settings
+# ----------------------------------------------------------------------------
+# Model Configuration
+# ----------------------------------------------------------------------------
+model:
+  name: qwen
+  model_id: Qwen/Qwen2.5-VL-3B-Instruct
+  use_int8: false
+  use_fast_processor: true
+  llm_layers: all  # or specify list like [0, 6, 12, 18, 24, 30, 35]
+  device: cuda
+
+# ----------------------------------------------------------------------------
+# Dataset Configuration
+# ----------------------------------------------------------------------------
+dataset:
+  # HuggingFace dataset settings (recommended)
+  # Dataset: https://huggingface.co/datasets/Hanoi0126/visual-object-attributes
+  hf_dataset: "Hanoi0126/visual-object-attributes"
+  hf_split: "auto"  # "auto" uses task name as split (e.g., "color", "count"), or use "train" for all tasks
+  hf_subset: null
+  
+  # Column names in the HF dataset
+  image_column: "image"
+  label_column: "label"
+  task_column: "task"
+  
+  # Local dataset (alternative - set hf_dataset to null to use this)
+  dataset_dir: null  # e.g., /path/to/dataset
+  csv_filename: "ALL_metadata.csv"
+
+# ----------------------------------------------------------------------------
+# Experiment Configuration
+# ----------------------------------------------------------------------------
+experiment:
+  # Tasks to run (both single-obj and multi-obj)
+  # All tasks now use the 'question' field from the dataset
+  tasks:
+    - count
+    - position
+    - occlusion
+    - shape
+    - color
+    - size
+    - location
+    - angle
+  
+# ----------------------------------------------------------------------------
+# Probing Configuration
+# ----------------------------------------------------------------------------
+probe:
+  n_folds: 5
+  seed: 0
+  max_iter: 2000
+  C: 1.0
+  solver: liblinear
+
+# ----------------------------------------------------------------------------
+# Output Configuration
+# ----------------------------------------------------------------------------
 output:
-  results_root: /content/results
+  results_root: /work/gb20/b20070/vlm-layer-wise-analysis/results
   save_features: true
   save_plots: true
   suffix: _qwen3b_llmtap
 
-# Experiment settings
+# ----------------------------------------------------------------------------
+# Experiment Settings
+# ----------------------------------------------------------------------------
 batch_size: 8
 device: cuda
 seed: 0

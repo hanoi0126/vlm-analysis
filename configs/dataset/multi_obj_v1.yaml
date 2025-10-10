@@ -1,3 +1,0 @@
-# Dataset configuration
-dataset_dir: /content/drive/MyDrive/vlm_reasoning/multi_obj_v1
-csv_filename: ALL_metadata.csv
