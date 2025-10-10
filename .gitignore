@@ -1,4 +1,9 @@
 data/
-output/
+.env
+logs/
+outputs/
+results/
+venv/
 .DS_Store
 .mypy_cache/
+__pycache__/
