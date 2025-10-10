@@ -78,3 +78,11 @@ seed: 0
 decode: true
 max_new_tokens: 32
 do_sample: false
+
+# ----------------------------------------------------------------------------
+# Hydra Configuration
+# ----------------------------------------------------------------------------
+hydra:
+  output_subdir: null
+  run:
+    dir: .
