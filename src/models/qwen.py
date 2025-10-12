@@ -44,7 +44,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         self.model = ModelClass.from_pretrained(  # type: ignore[no-untyped-call]
             model_id,
             quantization_config=quant,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
             device_map="auto",
         )
         self.model.eval()  # type: ignore[no-untyped-call]

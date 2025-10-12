@@ -21,9 +21,12 @@ from src.analysis.similarity import compute_similarity_all_layers
 from src.config.schema import Config
 from src.utils import get_experiment_output_dir
 from src.visualization.similarity_plots import (
+    create_trajectory_animation,
+    get_class_names_for_task,
     plot_2d_comparison,
     plot_layer_trajectory,
     plot_similarity_curves,
+    plot_trajectory_with_fade,
 )
 
 
@@ -194,8 +197,10 @@ def main(cfg: DictConfig) -> None:
 
             # 2. 2D comparison for selected layers
             print("Generating 2D comparisons...")
-            selected_layers = ["l00", "l12", "l24", "l35"]
-            for layer in selected_layers:
+            class_names = get_class_names_for_task(task, labels_imageon)
+            # Use all available LLM layers for 2D comparison
+            all_llm_layers = sorted([k for k in features_imageon if k.startswith("l") and k[:3].replace("l", "").isdigit()])
+            for layer in all_llm_layers:
                 if layer in features_imageon and layer in features_imageoff:
                     plot_2d_comparison(
                         features_a=features_imageon[layer],
@@ -204,12 +209,14 @@ def main(cfg: DictConfig) -> None:
                         layer=layer,
                         task=task,
                         method="pca",
+                        class_names=class_names,
                         output_path=str(plots_dir / f"2d_comparison_{layer}.png"),
                     )
 
-            # 3. Layer trajectory
+            # 3. Layer trajectory (original) - Use ALL available layers
             print("Generating layer trajectory...")
-            trajectory_layers = ["l00", "l06", "l12", "l18", "l24", "l30", "l35"]
+            # Use all available LLM layers for trajectory
+            trajectory_layers = all_llm_layers
             plot_layer_trajectory(
                 all_features_a=features_imageon,
                 all_features_b=features_imageoff,
@@ -218,7 +225,39 @@ def main(cfg: DictConfig) -> None:
                 task=task,
                 method="pca",
                 sample_size=100,
+                class_names=class_names,
                 output_path=str(plots_dir / "layer_trajectory.png"),
+            )
+
+            # 4. Layer trajectory with fade (new)
+            print("Generating layer trajectory with fade...")
+            plot_trajectory_with_fade(
+                all_features_a=features_imageon,
+                all_features_b=features_imageoff,
+                labels=labels_imageon,
+                selected_layers=trajectory_layers,
+                task=task,
+                method="pca",
+                sample_size=100,
+                class_names=class_names,
+                title_suffix=f"{config.model.model_id}",
+                output_path=str(plots_dir / "layer_trajectory_fade.png"),
+            )
+
+            # 5. Layer trajectory animation
+            print("Generating layer trajectory animation...")
+            create_trajectory_animation(
+                all_features_a=features_imageon,
+                all_features_b=features_imageoff,
+                labels=labels_imageon,
+                selected_layers=trajectory_layers,
+                task=task,
+                method="pca",
+                sample_size=100,
+                class_names=class_names,
+                title_suffix=f"{config.model.model_id}",
+                output_path=str(plots_dir / "layer_trajectory_animation.gif"),
+                fps=2,
             )
 
     # =========================================================================

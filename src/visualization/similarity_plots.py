@@ -7,6 +7,7 @@ and 2D projections of representation spaces.
 from pathlib import Path
 from typing import Literal
 
+from matplotlib import animation
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
@@ -16,6 +17,62 @@ from typing_extensions import assert_never
 import umap
 
 from src.visualization.plots import TASK_COLORS
+from src.visualization.styles import (
+    add_style_annotation,
+    get_line_kwargs,
+    get_scatter_kwargs,
+    get_text_color,
+    get_vision_color,
+)
+
+# ============================================================================
+# Class Name Mapping Utilities
+# ============================================================================
+
+
+def get_class_names_for_task(task: str, labels: NDArray[np.int64]) -> dict[int, str]:
+    """
+    Get class names for a given task based on label indices.
+
+    Args:
+        task: Task name (e.g., 'occlusion', 'angle', 'color')
+        labels: Array of label indices
+
+    Returns:
+        Dictionary mapping label index to class name
+    """
+    unique_labels = sorted(np.unique(labels).tolist())
+
+    # Define class names for common tasks
+    task_class_names = {
+        "occlusion": {0: "none", 1: "partial", 2: "heavy"},
+        "angle": {0: "0°", 1: "45°", 2: "90°", 3: "135°", 4: "180°", 5: "225°", 6: "270°", 7: "315°"},
+        "position": {
+            0: "top-left",
+            1: "top",
+            2: "top-right",
+            3: "left",
+            4: "center",
+            5: "right",
+            6: "bottom-left",
+            7: "bottom",
+            8: "bottom-right",
+        },
+        "count": {0: "1", 1: "2", 2: "3", 3: "4", 4: "5"},
+        "size": {0: "small", 1: "medium", 2: "large"},
+        "color": {0: "red", 1: "blue", 2: "green", 3: "yellow", 4: "purple", 5: "orange"},
+        "shape": {0: "circle", 1: "square", 2: "triangle", 3: "star", 4: "hexagon"},
+        "location": {0: "indoor", 1: "outdoor", 2: "urban", 3: "natural"},
+    }
+
+    # Get predefined class names if available
+    if task in task_class_names:
+        task_classes = task_class_names[task]
+        # Return only the classes present in the data
+        return {idx: task_classes.get(idx, f"class_{idx}") for idx in unique_labels}
+
+    # Default: use label indices as strings
+    return {idx: str(idx) for idx in unique_labels}
 
 
 def plot_similarity_curves(
@@ -97,6 +154,7 @@ def plot_2d_comparison(
     layer: str,
     task: str,
     method: Literal["pca", "tsne", "umap"] = "pca",
+    class_names: dict[int, str] | None = None,
     figsize: tuple[float, float] = (18, 6),
     output_path: str | Path | None = None,
 ) -> None:
@@ -114,9 +172,13 @@ def plot_2d_comparison(
         layer: Layer name
         task: Task name (used for titles)
         method: Dimensionality reduction method ("pca", "tsne", or "umap")
+        class_names: Optional dict mapping label index to class name
         figsize: Figure size as (width, height)
         output_path: Path to save the plot. If None, only displays the plot
     """
+    # Get class names
+    if class_names is None:
+        class_names = get_class_names_for_task(task, labels)
     # Dimensionality reduction
     if method == "pca":
         reducer = PCA(n_components=2, random_state=0)
@@ -145,11 +207,12 @@ def plot_2d_comparison(
     # Plot A (Vision)
     for i, label in enumerate(unique_labels):
         mask = labels == label
+        class_name = class_names.get(label, str(label))
         ax1.scatter(
             features_a_2d[mask, 0],
             features_a_2d[mask, 1],
             c=[cmap(i)],
-            label=f"Class {label}",
+            label=class_name,
             alpha=0.6,
             s=50,
             edgecolors="white",
@@ -164,11 +227,12 @@ def plot_2d_comparison(
     # Plot B (Text)
     for i, label in enumerate(unique_labels):
         mask = labels == label
+        class_name = class_names.get(label, str(label))
         ax2.scatter(
             features_b_2d[mask, 0],
             features_b_2d[mask, 1],
             c=[cmap(i)],
-            label=f"Class {label}",
+            label=class_name,
             alpha=0.6,
             s=50,
             edgecolors="white",
@@ -183,6 +247,7 @@ def plot_2d_comparison(
     # Plot overlay with arrows
     for i, label in enumerate(unique_labels):
         mask = labels == label
+        class_name = class_names.get(label, str(label))
         # Plot both conditions
         ax3.scatter(
             features_a_2d[mask, 0],
@@ -191,7 +256,7 @@ def plot_2d_comparison(
             marker="o",
             alpha=0.4,
             s=50,
-            label=f"Class {label} (Vision)",
+            label=f"{class_name} (Vision)",
             edgecolors="white",
             linewidth=0.5,
         )
@@ -236,7 +301,7 @@ def plot_2d_comparison(
 
     # Add legend (only unique class labels, not both markers)
     handles = [
-        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=cmap(i), markersize=8, label=f"Class {label}")
+        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=cmap(i), markersize=8, label=class_names.get(label, str(label)))
         for i, label in enumerate(unique_labels)
     ]
     ax3.legend(handles=handles, bbox_to_anchor=(1.05, 1), loc="upper left", fontsize=8)
@@ -275,6 +340,7 @@ def plot_layer_trajectory(
     method: Literal["pca", "tsne", "umap"] = "pca",
     sample_size: int = 100,
     n_arrows_per_class: int = 3,
+    class_names: dict[int, str] | None = None,
     title_suffix: str = "",
     figsize: tuple[float, float] = (24, 7),
     output_path: str | Path | None = None,
@@ -300,10 +366,14 @@ def plot_layer_trajectory(
         method: Dimensionality reduction method ("pca", "tsne", or "umap")
         sample_size: Maximum number of samples to plot (for clarity)
         n_arrows_per_class: Number of trajectory arrows to draw per class
+        class_names: Optional dict mapping label index to class name
         title_suffix: Additional text to append to plot titles
         figsize: Figure size as (width, height)
         output_path: Path to save the plot. If None, only displays the plot
     """
+    # Get class names
+    if class_names is None:
+        class_names = get_class_names_for_task(task, labels)
     # Sample data for clarity
     n = len(labels)
     if n > sample_size:
@@ -382,6 +452,7 @@ def plot_layer_trajectory(
     # =========================================================================
     for i, label in enumerate(unique_labels):
         mask = sampled_labels == label
+        class_name = class_names.get(label, str(label))
 
         # Plot points for each layer with varying size and color
         for j, layer in enumerate(valid_layers):
@@ -402,7 +473,7 @@ def plot_layer_trajectory(
                 alpha=0.7,
                 edgecolors=layer_color,
                 linewidth=2.5,
-                label=f"Class {label}" if j == 0 else "",
+                label=class_name if j == 0 else "",
                 zorder=10 + j,
             )
 
@@ -489,6 +560,7 @@ def plot_layer_trajectory(
     # =========================================================================
     for i, label in enumerate(unique_labels):
         mask = sampled_labels == label
+        class_name = class_names.get(label, str(label))
 
         for j, layer in enumerate(valid_layers):
             points = trajectories_b[j][mask]
@@ -506,7 +578,7 @@ def plot_layer_trajectory(
                 alpha=0.7,
                 edgecolors=layer_color,
                 linewidth=2.5,
-                label=f"Class {label}" if j == 0 else "",
+                label=class_name if j == 0 else "",
                 zorder=10 + j,
             )
 
@@ -592,6 +664,7 @@ def plot_layer_trajectory(
     # =========================================================================
     for i, label in enumerate(unique_labels):
         mask = sampled_labels == label
+        class_name = class_names.get(label, str(label))
 
         # Plot both trajectories on same axes
         for j, layer in enumerate(valid_layers):
@@ -611,7 +684,7 @@ def plot_layer_trajectory(
                 alpha=0.6,
                 edgecolors=layer_color,
                 linewidth=2.0,
-                label=f"Class {label} (Vision)" if j == 0 else "",
+                label=f"{class_name} (Vision)" if j == 0 else "",
                 zorder=10 + j,
             )
 
@@ -625,7 +698,7 @@ def plot_layer_trajectory(
                 alpha=0.6,
                 edgecolors=layer_color,
                 linewidth=2.0,
-                label=f"Class {label} (Text)" if j == 0 else "",
+                label=f"{class_name} (Text)" if j == 0 else "",
                 zorder=10 + j,
             )
 
@@ -783,4 +856,497 @@ def plot_layer_trajectory(
         print(f"[INFO] Saved plot to: {output_path}")
 
     plt.show()
+    plt.close(fig)
+
+
+def plot_trajectory_with_fade(
+    all_features_a: dict[str, NDArray[np.float64]],
+    all_features_b: dict[str, NDArray[np.float64]],
+    labels: NDArray[np.int64],
+    selected_layers: list[str],
+    task: str,
+    method: Literal["pca", "tsne", "umap"] = "pca",
+    sample_size: int = 100,
+    class_names: dict[int, str] | None = None,
+    title_suffix: str = "",
+    figsize: tuple[float, float] = (24, 7),
+    output_path: str | Path | None = None,
+) -> None:
+    """Plot trajectory with individual samples faded and main trends highlighted.
+
+    Creates 3 panels visualizing representation evolution through layers:
+    1. Vision space: faded individual samples + bold centroid trajectory
+    2. Text space: faded individual samples + bold centroid trajectory
+    3. Overlay comparison
+
+    Args:
+        all_features_a: Dict mapping layer names to Vision features of shape (N, D)
+        all_features_b: Dict mapping layer names to Text features of shape (N, D)
+        labels: Class labels of shape (N,)
+        selected_layers: List of layer names to visualize (in order)
+        task: Task name (used for titles and class name inference)
+        method: Dimensionality reduction method ("pca", "tsne", or "umap")
+        sample_size: Maximum number of samples to plot (for clarity)
+        class_names: Optional dict mapping label index to class name
+        title_suffix: Additional text to append to plot titles
+        figsize: Figure size as (width, height)
+        output_path: Path to save the plot. If None, only displays the plot
+    """
+    # Sample data for clarity
+    n = len(labels)
+    if n > sample_size:
+        indices = np.random.choice(n, size=sample_size, replace=False)
+    else:
+        indices = np.arange(n)
+
+    sampled_labels = labels[indices]
+
+    # Get class names
+    if class_names is None:
+        class_names = get_class_names_for_task(task, labels)
+
+    # Prepare data for each layer
+    trajectories_a: list[NDArray[np.float64]] = []
+    trajectories_b: list[NDArray[np.float64]] = []
+    valid_layers: list[str] = []
+
+    for layer in selected_layers:
+        if layer in all_features_a and layer in all_features_b:
+            features_a = all_features_a[layer][indices]
+            features_b = all_features_b[layer][indices]
+
+            # Reduce to 2D
+            if method == "pca":
+                reducer = PCA(n_components=2, random_state=0)
+            elif method == "tsne":
+                perplexity = min(30, len(indices) - 1)
+                reducer = TSNE(n_components=2, random_state=0, perplexity=perplexity)
+            elif method == "umap":
+                reducer = umap.UMAP(n_components=2, random_state=0)
+            else:
+                assert_never(method)
+
+            # Fit on combined for consistency
+            combined = np.vstack([features_a, features_b])
+            combined_2d = reducer.fit_transform(combined)
+
+            features_a_2d = combined_2d[: len(features_a)]
+            features_b_2d = combined_2d[len(features_a) :]
+
+            trajectories_a.append(features_a_2d)
+            trajectories_b.append(features_b_2d)
+            valid_layers.append(layer)
+
+    if not trajectories_a:
+        print("[WARN] No valid layers found for trajectory plot")
+        return
+
+    # Create 3-panel figure
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=figsize)
+
+    unique_labels = np.unique(sampled_labels)
+    n_classes = len(unique_labels)
+
+    # Calculate common scale for all panels
+    all_points_a = np.vstack(trajectories_a)
+    all_points_b = np.vstack(trajectories_b)
+    all_points = np.vstack([all_points_a, all_points_b])
+
+    x_min, x_max = all_points[:, 0].min(), all_points[:, 0].max()
+    y_min, y_max = all_points[:, 1].min(), all_points[:, 1].max()
+
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    padding = 0.15
+
+    x_min -= x_range * padding
+    x_max += x_range * padding
+    y_min -= y_range * padding
+    y_max += y_range * padding
+
+    # Helper function to plot one panel
+    def plot_panel(ax: plt.Axes, trajectories: list[NDArray[np.float64]], condition: str, title_text: str) -> None:
+        # Step 1: Plot ALL individual samples with very low alpha (薄く)
+        for i, label in enumerate(unique_labels):
+            mask = sampled_labels == label
+            class_name = class_names.get(label, str(label))
+
+            for j in range(len(valid_layers)):
+                points = trajectories[j][mask]
+
+                kwargs = get_scatter_kwargs(
+                    condition=condition,
+                    class_idx=i,
+                    n_classes=n_classes,
+                    size=30,
+                    alpha=0.15,  # Very faint for individual samples
+                    edgecolors="none",
+                    zorder=1,
+                )
+
+                ax.scatter(points[:, 0], points[:, 1], **kwargs)
+
+        # Step 2: Plot centroid trajectory with HIGH alpha (濃く)
+        for i, label in enumerate(unique_labels):
+            mask = sampled_labels == label
+            class_name = class_names.get(label, str(label))
+
+            # Calculate centroids for each layer
+            centroids = np.array([trajectories[j][mask].mean(axis=0) for j in range(len(valid_layers))])
+
+            # Plot trajectory line
+            line_kwargs = get_line_kwargs(
+                condition=condition,
+                class_idx=i,
+                n_classes=n_classes,
+                linewidth=5.0,
+                alpha=0.9,
+                zorder=20,
+            )
+
+            ax.plot(centroids[:, 0], centroids[:, 1], **line_kwargs, label=class_name)
+
+            # Step 3: Highlight start and end centroids
+            color = get_vision_color(i, n_classes) if condition == "vision" else get_text_color(i, n_classes)
+
+            # Start point (circle)
+            ax.scatter(
+                centroids[0, 0],
+                centroids[0, 1],
+                c=color,
+                s=300,
+                marker="o",
+                edgecolors="black",
+                linewidth=3.0,
+                zorder=30,
+            )
+
+            # End point (star)
+            ax.scatter(
+                centroids[-1, 0],
+                centroids[-1, 1],
+                c=color,
+                s=400,
+                marker="*",
+                edgecolors="black",
+                linewidth=3.0,
+                zorder=30,
+            )
+
+        title = title_text
+        if title_suffix:
+            title += f"\n({title_suffix})"
+        ax.set_title(title, fontsize=15, fontweight="bold", pad=15)
+        ax.set_xlabel(f"{method.upper()} Component 1", fontsize=12)
+        ax.set_ylabel(f"{method.upper()} Component 2", fontsize=12)
+        ax.legend(loc="best", framealpha=0.95, fontsize=10, title="Class", title_fontsize=11)
+        ax.grid(True, alpha=0.3, linestyle="--")
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_aspect("equal", adjustable="box")
+
+        # Add layer info
+        ax.text(
+            0.02,
+            0.02,
+            f"Layers: {valid_layers[0]} → {valid_layers[-1]}\n○ = start, ★ = end",
+            transform=ax.transAxes,
+            verticalalignment="bottom",
+            bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.7},
+            fontsize=9,
+        )
+
+    # =========================================================================
+    # Panel 1: Vision Trajectory
+    # =========================================================================
+    plot_panel(ax1, trajectories_a, "vision", f"Vision Trajectory (Image ON)\n{task}")
+
+    # =========================================================================
+    # Panel 2: Text Trajectory
+    # =========================================================================
+    plot_panel(ax2, trajectories_b, "text", f"Text Trajectory (Image OFF)\n{task}")
+
+    # =========================================================================
+    # Panel 3: Overlay Comparison
+    # =========================================================================
+    for i, label in enumerate(unique_labels):
+        mask = sampled_labels == label
+        class_name = class_names.get(label, str(label))
+
+        # Faded individual samples for both conditions
+        for j in range(len(valid_layers)):
+            # Vision samples
+            points_a = trajectories_a[j][mask]
+            kwargs_a = get_scatter_kwargs(
+                condition="vision",
+                class_idx=i,
+                n_classes=n_classes,
+                size=25,
+                alpha=0.12,
+                edgecolors="none",
+                zorder=1,
+            )
+            ax3.scatter(points_a[:, 0], points_a[:, 1], **kwargs_a)
+
+            # Text samples
+            points_b = trajectories_b[j][mask]
+            kwargs_b = get_scatter_kwargs(
+                condition="text",
+                class_idx=i,
+                n_classes=n_classes,
+                size=25,
+                alpha=0.12,
+                edgecolors="none",
+                zorder=1,
+            )
+            ax3.scatter(points_b[:, 0], points_b[:, 1], **kwargs_b)
+
+        # Bold centroid trajectories
+        centroids_a = np.array([trajectories_a[j][mask].mean(axis=0) for j in range(len(valid_layers))])
+        centroids_b = np.array([trajectories_b[j][mask].mean(axis=0) for j in range(len(valid_layers))])
+
+        # Vision trajectory
+        line_kwargs_a = get_line_kwargs("vision", i, n_classes, linewidth=4.5, alpha=0.9, zorder=20)
+        ax3.plot(centroids_a[:, 0], centroids_a[:, 1], **line_kwargs_a, label=f"{class_name} (V)")
+
+        # Text trajectory
+        line_kwargs_b = get_line_kwargs("text", i, n_classes, linewidth=4.5, alpha=0.9, zorder=20)
+        ax3.plot(centroids_b[:, 0], centroids_b[:, 1], **line_kwargs_b, label=f"{class_name} (T)")
+
+        # Markers
+        color_a = get_vision_color(i, n_classes)
+        color_b = get_text_color(i, n_classes)
+
+        ax3.scatter(centroids_a[0, 0], centroids_a[0, 1], c=color_a, s=300, marker="o", edgecolors="black", linewidth=3.0, zorder=30)
+        ax3.scatter(centroids_a[-1, 0], centroids_a[-1, 1], c=color_a, s=400, marker="*", edgecolors="black", linewidth=3.0, zorder=30)
+        ax3.scatter(centroids_b[0, 0], centroids_b[0, 1], c=color_b, s=300, marker="s", edgecolors="white", linewidth=3.0, zorder=30)
+        ax3.scatter(centroids_b[-1, 0], centroids_b[-1, 1], c=color_b, s=400, marker="P", edgecolors="white", linewidth=3.0, zorder=30)
+
+    title = f"Overlay: Vision vs Text\n{task}"
+    if title_suffix:
+        title += f"\n({title_suffix})"
+    ax3.set_title(title, fontsize=15, fontweight="bold", pad=15)
+    ax3.set_xlabel(f"{method.upper()} Component 1", fontsize=12)
+    ax3.set_ylabel(f"{method.upper()} Component 2", fontsize=12)
+    ax3.legend(loc="best", framealpha=0.95, fontsize=9, ncol=2, title="Class (V=Vision, T=Text)", title_fontsize=10)
+    ax3.grid(True, alpha=0.3, linestyle="--")
+    ax3.set_xlim(x_min, x_max)
+    ax3.set_ylim(y_min, y_max)
+    ax3.set_aspect("equal", adjustable="box")
+
+    # Add style annotation
+    add_style_annotation(ax3, position="bottom_right")
+
+    fig.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"[INFO] Saved plot to: {output_path}")
+
+    plt.show()
+    plt.close(fig)
+
+
+def create_trajectory_animation(
+    all_features_a: dict[str, NDArray[np.float64]],
+    all_features_b: dict[str, NDArray[np.float64]],
+    labels: NDArray[np.int64],
+    selected_layers: list[str],
+    task: str,
+    method: Literal["pca", "tsne", "umap"] = "pca",
+    sample_size: int = 100,
+    class_names: dict[int, str] | None = None,
+    title_suffix: str = "",
+    figsize: tuple[float, float] = (12, 12),
+    output_path: str | Path | None = None,
+    fps: int = 2,
+) -> None:
+    """Create animated GIF showing layer progression.
+
+    Animates the trajectory of representations as they progress through layers,
+    with each frame showing accumulated layers up to that point.
+
+    Args:
+        all_features_a: Dict mapping layer names to Vision features of shape (N, D)
+        all_features_b: Dict mapping layer names to Text features of shape (N, D)
+        labels: Class labels of shape (N,)
+        selected_layers: List of layer names to visualize (in order)
+        task: Task name (used for titles and class name inference)
+        method: Dimensionality reduction method ("pca", "tsne", or "umap")
+        sample_size: Maximum number of samples to plot (for clarity)
+        class_names: Optional dict mapping label index to class name
+        title_suffix: Additional text to append to plot titles
+        figsize: Figure size as (width, height)
+        output_path: Path to save the GIF. If None, defaults to "trajectory.gif"
+        fps: Frames per second for animation
+    """
+    # Sample data
+    n = len(labels)
+    if n > sample_size:
+        indices = np.random.choice(n, size=sample_size, replace=False)
+    else:
+        indices = np.arange(n)
+
+    sampled_labels = labels[indices]
+
+    # Get class names
+    if class_names is None:
+        class_names = get_class_names_for_task(task, labels)
+
+    # Prepare data for each layer
+    trajectories_a: list[NDArray[np.float64]] = []
+    trajectories_b: list[NDArray[np.float64]] = []
+    valid_layers: list[str] = []
+
+    for layer in selected_layers:
+        if layer in all_features_a and layer in all_features_b:
+            features_a = all_features_a[layer][indices]
+            features_b = all_features_b[layer][indices]
+
+            # Reduce to 2D
+            if method == "pca":
+                reducer = PCA(n_components=2, random_state=0)
+            elif method == "tsne":
+                perplexity = min(30, len(indices) - 1)
+                reducer = TSNE(n_components=2, random_state=0, perplexity=perplexity)
+            elif method == "umap":
+                reducer = umap.UMAP(n_components=2, random_state=0)
+            else:
+                assert_never(method)
+
+            # Fit on combined for consistency
+            combined = np.vstack([features_a, features_b])
+            combined_2d = reducer.fit_transform(combined)
+
+            features_a_2d = combined_2d[: len(features_a)]
+            features_b_2d = combined_2d[len(features_a) :]
+
+            trajectories_a.append(features_a_2d)
+            trajectories_b.append(features_b_2d)
+            valid_layers.append(layer)
+
+    if not trajectories_a:
+        print("[WARN] No valid layers found for animation")
+        return
+
+    unique_labels = np.unique(sampled_labels)
+    n_classes = len(unique_labels)
+
+    # Calculate common scale for all frames
+    all_points_a = np.vstack(trajectories_a)
+    all_points_b = np.vstack(trajectories_b)
+    all_points = np.vstack([all_points_a, all_points_b])
+
+    x_min, x_max = all_points[:, 0].min(), all_points[:, 0].max()
+    y_min, y_max = all_points[:, 1].min(), all_points[:, 1].max()
+
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    padding = 0.15
+
+    x_min -= x_range * padding
+    x_max += x_range * padding
+    y_min -= y_range * padding
+    y_max += y_range * padding
+
+    # Create figure and animation
+    fig, ax = plt.subplots(figsize=figsize)
+
+    def update(frame: int) -> None:
+        ax.clear()
+
+        # Plot up to frame-th layer
+        for i, label in enumerate(unique_labels):
+            mask = sampled_labels == label
+            class_name = class_names.get(label, str(label))
+
+            # Plot points up to current frame with increasing alpha
+            for j in range(frame + 1):
+                # Alpha increases as we approach current frame
+                alpha = 0.3 + 0.7 * (j / max(1, frame))
+                size = 50 + 50 * (j / max(1, frame))
+
+                # Vision points
+                points_a = trajectories_a[j][mask]
+                kwargs_a = get_scatter_kwargs(
+                    "vision",
+                    i,
+                    n_classes,
+                    size=size,
+                    alpha=alpha,
+                    zorder=10 + j,
+                )
+                ax.scatter(points_a[:, 0], points_a[:, 1], **kwargs_a, label=f"{class_name} (Vision)" if j == 0 else "")
+
+                # Text points
+                points_b = trajectories_b[j][mask]
+                kwargs_b = get_scatter_kwargs(
+                    "text",
+                    i,
+                    n_classes,
+                    size=size,
+                    alpha=alpha,
+                    zorder=10 + j,
+                )
+                ax.scatter(points_b[:, 0], points_b[:, 1], **kwargs_b, label=f"{class_name} (Text)" if j == 0 else "")
+
+            # Draw trajectory lines up to current frame
+            if frame > 0:
+                centroids_a = np.array([trajectories_a[j][mask].mean(axis=0) for j in range(frame + 1)])
+                centroids_b = np.array([trajectories_b[j][mask].mean(axis=0) for j in range(frame + 1)])
+
+                # Vision trajectory
+                line_kwargs_a = get_line_kwargs("vision", i, n_classes, linewidth=3.5, alpha=0.8, zorder=20)
+                ax.plot(centroids_a[:, 0], centroids_a[:, 1], **line_kwargs_a)
+
+                # Text trajectory
+                line_kwargs_b = get_line_kwargs("text", i, n_classes, linewidth=3.5, alpha=0.8, zorder=20)
+                ax.plot(centroids_b[:, 0], centroids_b[:, 1], **line_kwargs_b)
+
+        title = f"{task} — Layer {valid_layers[frame]}"
+        if title_suffix:
+            title += f" ({title_suffix})"
+        ax.set_title(title, fontsize=16, fontweight="bold")
+        ax.set_xlabel(f"{method.upper()} Component 1", fontsize=12)
+        ax.set_ylabel(f"{method.upper()} Component 2", fontsize=12)
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_aspect("equal", adjustable="box")
+        ax.legend(loc="best", framealpha=0.95, fontsize=10, ncol=2)
+        ax.grid(True, alpha=0.3)
+
+        # Add progress indicator
+        ax.text(
+            0.02,
+            0.98,
+            f"Frame {frame + 1}/{len(valid_layers)}",
+            transform=ax.transAxes,
+            verticalalignment="top",
+            bbox={"boxstyle": "round", "facecolor": "lightblue", "alpha": 0.8},
+            fontsize=11,
+            fontweight="bold",
+        )
+
+        # Add style annotation
+        add_style_annotation(ax, position="bottom_right")
+
+    # Create animation
+    anim = animation.FuncAnimation(
+        fig,
+        update,  # type: ignore[arg-type]
+        frames=len(valid_layers),
+        interval=int(1000 / fps),
+        repeat=True,
+    )
+
+    # Save animation
+    if output_path is None:
+        output_path = "trajectory.gif"
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    anim.save(str(output_path), writer="pillow", fps=fps)
+    print(f"[INFO] Saved animation to: {output_path}")
+
     plt.close(fig)
