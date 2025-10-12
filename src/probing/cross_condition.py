@@ -23,7 +23,7 @@ warnings.filterwarnings(
 )
 
 
-def train_cross_condition_probe(  # noqa: PLR0913
+def train_cross_condition_probe(
     X_train: np.ndarray,  # noqa: N803
     y_train: np.ndarray,
     X_test_same: np.ndarray,  # noqa: N803
@@ -105,7 +105,7 @@ def train_cross_condition_probe(  # noqa: PLR0913
     }
 
 
-def cross_condition_probe_all_layers(  # noqa: PLR0913
+def cross_condition_probe_all_layers(
     features_condA: dict[str, np.ndarray],  # noqa: N803
     features_condB: dict[str, np.ndarray],  # noqa: N803
     labels: np.ndarray,

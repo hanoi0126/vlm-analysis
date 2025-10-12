@@ -227,7 +227,7 @@ def run_extract_probe_decode(
     return df
 
 
-def probe_all_tasks(  # noqa: PLR0913
+def probe_all_tasks(
     results_root: Path,
     tasks: list[str],
     suffix: str,
@@ -315,7 +315,7 @@ def probe_all_tasks(  # noqa: PLR0913
     return pd.DataFrame(rows).sort_values("task").reset_index(drop=True)
 
 
-def _probe_task_dir(  # noqa: PLR0913
+def _probe_task_dir(
     task_dir: Path,
     n_folds: int = 5,
     seed: int = 0,

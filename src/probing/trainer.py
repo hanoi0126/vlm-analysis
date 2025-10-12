@@ -44,7 +44,7 @@ def safe_macro_ovr_auc(
     return float(np.mean(aucs)) if aucs else float("nan")
 
 
-def train_eval_probe(  # noqa: PLR0913
+def train_eval_probe(
     features: np.ndarray,
     y: np.ndarray,
     n_splits: int = 5,
