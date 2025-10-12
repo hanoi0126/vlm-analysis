@@ -11,6 +11,7 @@ from matplotlib import animation
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
+import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from typing_extensions import assert_never
@@ -30,49 +31,45 @@ from src.visualization.styles import (
 # ============================================================================
 
 
-def get_class_names_for_task(task: str, labels: NDArray[np.int64]) -> dict[int, str]:
+def get_class_names_for_task(
+    task: str,
+    labels: NDArray[np.int64],
+    task_dir: Path | str | None = None,
+) -> dict[int, str]:
     """
     Get class names for a given task based on label indices.
+
+    First tries to load from decode_log.csv if task_dir is provided,
+    then falls back to hardcoded mappings.
 
     Args:
         task: Task name (e.g., 'occlusion', 'angle', 'color')
         labels: Array of label indices
+        task_dir: Optional path to task directory containing decode_log.csv
 
     Returns:
         Dictionary mapping label index to class name
     """
     unique_labels = sorted(np.unique(labels).tolist())
 
-    # Define class names for common tasks
-    task_class_names = {
-        "occlusion": {0: "none", 1: "partial", 2: "heavy"},
-        "angle": {0: "0°", 1: "45°", 2: "90°", 3: "135°", 4: "180°", 5: "225°", 6: "270°", 7: "315°"},
-        "position": {
-            0: "top-left",
-            1: "top",
-            2: "top-right",
-            3: "left",
-            4: "center",
-            5: "right",
-            6: "bottom-left",
-            7: "bottom",
-            8: "bottom-right",
-        },
-        "count": {0: "1", 1: "2", 2: "3", 3: "4", 4: "5"},
-        "size": {0: "small", 1: "medium", 2: "large"},
-        "color": {0: "red", 1: "blue", 2: "green", 3: "yellow", 4: "purple", 5: "orange"},
-        "shape": {0: "circle", 1: "square", 2: "triangle", 3: "star", 4: "hexagon"},
-        "location": {0: "indoor", 1: "outdoor", 2: "urban", 3: "natural"},
-    }
+    # Try to load from decode_log.csv if task_dir is provided
+    if task_dir is not None:
+        task_path = Path(task_dir)
+        decode_log_path = task_path / "decode_log.csv"
 
-    # Get predefined class names if available
-    if task in task_class_names:
-        task_classes = task_class_names[task]
-        # Return only the classes present in the data
-        return {idx: task_classes.get(idx, f"class_{idx}") for idx in unique_labels}
+        if decode_log_path.exists():
+            try:
+                df = pd.read_csv(decode_log_path)
+                if "label_id" in df.columns and "ground_truth" in df.columns:
+                    # Build mapping from label_id to ground_truth
+                    mapping = df.groupby("label_id")["ground_truth"].first().to_dict()
+                    # Return only the classes present in the data
+                    return {idx: mapping.get(idx, f"class_{idx}") for idx in unique_labels}
+            except Exception as e:
+                print(f"[WARN] Failed to load decode_log.csv from {decode_log_path}: {e}")
 
-    # Default: use label indices as strings
-    return {idx: str(idx) for idx in unique_labels}
+    msg = f"No class names found for task {task} in {task_dir}"
+    raise ValueError(msg)
 
 
 def plot_similarity_curves(
@@ -155,6 +152,7 @@ def plot_2d_comparison(
     task: str,
     method: Literal["pca", "tsne", "umap"] = "pca",
     class_names: dict[int, str] | None = None,
+    task_dir: Path | str | None = None,
     figsize: tuple[float, float] = (18, 6),
     output_path: str | Path | None = None,
 ) -> None:
@@ -173,12 +171,13 @@ def plot_2d_comparison(
         task: Task name (used for titles)
         method: Dimensionality reduction method ("pca", "tsne", or "umap")
         class_names: Optional dict mapping label index to class name
+        task_dir: Optional path to task directory containing decode_log.csv
         figsize: Figure size as (width, height)
         output_path: Path to save the plot. If None, only displays the plot
     """
     # Get class names
     if class_names is None:
-        class_names = get_class_names_for_task(task, labels)
+        class_names = get_class_names_for_task(task, labels, task_dir=task_dir)
     # Dimensionality reduction
     if method == "pca":
         reducer = PCA(n_components=2, random_state=0)
@@ -341,6 +340,7 @@ def plot_layer_trajectory(
     sample_size: int = 100,
     n_arrows_per_class: int = 3,
     class_names: dict[int, str] | None = None,
+    task_dir: Path | str | None = None,
     title_suffix: str = "",
     figsize: tuple[float, float] = (24, 7),
     output_path: str | Path | None = None,
@@ -367,13 +367,14 @@ def plot_layer_trajectory(
         sample_size: Maximum number of samples to plot (for clarity)
         n_arrows_per_class: Number of trajectory arrows to draw per class
         class_names: Optional dict mapping label index to class name
+        task_dir: Optional path to task directory containing decode_log.csv
         title_suffix: Additional text to append to plot titles
         figsize: Figure size as (width, height)
         output_path: Path to save the plot. If None, only displays the plot
     """
     # Get class names
     if class_names is None:
-        class_names = get_class_names_for_task(task, labels)
+        class_names = get_class_names_for_task(task, labels, task_dir=task_dir)
     # Sample data for clarity
     n = len(labels)
     if n > sample_size:
@@ -868,6 +869,7 @@ def plot_trajectory_with_fade(
     method: Literal["pca", "tsne", "umap"] = "pca",
     sample_size: int = 100,
     class_names: dict[int, str] | None = None,
+    task_dir: Path | str | None = None,
     title_suffix: str = "",
     figsize: tuple[float, float] = (24, 7),
     output_path: str | Path | None = None,
@@ -888,6 +890,7 @@ def plot_trajectory_with_fade(
         method: Dimensionality reduction method ("pca", "tsne", or "umap")
         sample_size: Maximum number of samples to plot (for clarity)
         class_names: Optional dict mapping label index to class name
+        task_dir: Optional path to task directory containing decode_log.csv
         title_suffix: Additional text to append to plot titles
         figsize: Figure size as (width, height)
         output_path: Path to save the plot. If None, only displays the plot
@@ -903,7 +906,7 @@ def plot_trajectory_with_fade(
 
     # Get class names
     if class_names is None:
-        class_names = get_class_names_for_task(task, labels)
+        class_names = get_class_names_for_task(task, labels, task_dir=task_dir)
 
     # Prepare data for each layer
     trajectories_a: list[NDArray[np.float64]] = []
@@ -1156,6 +1159,7 @@ def create_trajectory_animation(
     method: Literal["pca", "tsne", "umap"] = "pca",
     sample_size: int = 100,
     class_names: dict[int, str] | None = None,
+    task_dir: Path | str | None = None,
     title_suffix: str = "",
     figsize: tuple[float, float] = (12, 12),
     output_path: str | Path | None = None,
@@ -1175,6 +1179,7 @@ def create_trajectory_animation(
         method: Dimensionality reduction method ("pca", "tsne", or "umap")
         sample_size: Maximum number of samples to plot (for clarity)
         class_names: Optional dict mapping label index to class name
+        task_dir: Optional path to task directory containing decode_log.csv
         title_suffix: Additional text to append to plot titles
         figsize: Figure size as (width, height)
         output_path: Path to save the GIF. If None, defaults to "trajectory.gif"
@@ -1191,7 +1196,7 @@ def create_trajectory_animation(
 
     # Get class names
     if class_names is None:
-        class_names = get_class_names_for_task(task, labels)
+        class_names = get_class_names_for_task(task, labels, task_dir=task_dir)
 
     # Prepare data for each layer
     trajectories_a: list[NDArray[np.float64]] = []
@@ -1255,40 +1260,37 @@ def create_trajectory_animation(
     def update(frame: int) -> None:
         ax.clear()
 
-        # Plot up to frame-th layer
+        # Plot current layer only
         for i, label in enumerate(unique_labels):
             mask = sampled_labels == label
             class_name = class_names.get(label, str(label))
 
-            # Plot points up to current frame with increasing alpha
-            for j in range(frame + 1):
-                # Alpha increases as we approach current frame
-                alpha = 0.3 + 0.7 * (j / max(1, frame))
-                size = 50 + 50 * (j / max(1, frame))
+            # Plot points for current frame only
+            j = frame
 
-                # Vision points
-                points_a = trajectories_a[j][mask]
-                kwargs_a = get_scatter_kwargs(
-                    "vision",
-                    i,
-                    n_classes,
-                    size=size,
-                    alpha=alpha,
-                    zorder=10 + j,
-                )
-                ax.scatter(points_a[:, 0], points_a[:, 1], **kwargs_a, label=f"{class_name} (Vision)" if j == 0 else "")
+            # Vision points
+            points_a = trajectories_a[j][mask]
+            kwargs_a = get_scatter_kwargs(
+                "vision",
+                i,
+                n_classes,
+                size=100,
+                alpha=0.7,
+                zorder=10 + j,
+            )
+            ax.scatter(points_a[:, 0], points_a[:, 1], **kwargs_a, label=f"{class_name} (Vision)")
 
-                # Text points
-                points_b = trajectories_b[j][mask]
-                kwargs_b = get_scatter_kwargs(
-                    "text",
-                    i,
-                    n_classes,
-                    size=size,
-                    alpha=alpha,
-                    zorder=10 + j,
-                )
-                ax.scatter(points_b[:, 0], points_b[:, 1], **kwargs_b, label=f"{class_name} (Text)" if j == 0 else "")
+            # Text points
+            points_b = trajectories_b[j][mask]
+            kwargs_b = get_scatter_kwargs(
+                "text",
+                i,
+                n_classes,
+                size=100,
+                alpha=0.7,
+                zorder=10 + j,
+            )
+            ax.scatter(points_b[:, 0], points_b[:, 1], **kwargs_b, label=f"{class_name} (Text)")
 
             # Draw trajectory lines up to current frame
             if frame > 0:

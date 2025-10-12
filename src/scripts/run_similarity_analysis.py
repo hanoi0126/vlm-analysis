@@ -197,7 +197,7 @@ def main(cfg: DictConfig) -> None:
 
             # 2. 2D comparison for selected layers
             print("Generating 2D comparisons...")
-            class_names = get_class_names_for_task(task, labels_imageon)
+            class_names = get_class_names_for_task(task, labels=labels_imageon, task_dir=dir_imageon)
             # Use all available LLM layers for 2D comparison
             all_llm_layers = sorted([k for k in features_imageon if k.startswith("l") and k[:3].replace("l", "").isdigit()])
             for layer in all_llm_layers:
