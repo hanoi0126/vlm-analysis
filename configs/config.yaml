@@ -6,8 +6,8 @@
 # Model Configuration
 # ----------------------------------------------------------------------------
 model:
-  name: qwen
-  model_id: Qwen/Qwen2.5-VL-3B-Instruct
+  name: llava
+  model_id: llava-hf/llava-1.5-7b-hf
   use_int8: false
   use_fast_processor: true
   llm_layers: all  # or specify list like [0, 6, 12, 18, 24, 30, 35]
