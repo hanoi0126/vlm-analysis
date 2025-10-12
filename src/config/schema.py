@@ -60,7 +60,6 @@ class OutputConfig(BaseModel):
     results_root: Path = Field(default=..., description="Results root directory")
     save_features: bool = Field(default=True, description="Save feature arrays")
     save_plots: bool = Field(default=True, description="Save plots")
-    suffix: str = Field(default="_qwen3b_llmtap", description="Suffix for output directories")
 
 
 class Config(BaseModel):
