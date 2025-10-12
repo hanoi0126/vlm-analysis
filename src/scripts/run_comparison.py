@@ -58,7 +58,6 @@ def main(cfg: DictConfig) -> None:
 
     # Override results_root to use new structure for Image ON
     config.output.results_root = comparison_root
-    config.output.suffix = "_imageon"
 
     print(f"\nExtracting features for tasks: {config.experiment.tasks}")
     summary_with = run_extract_probe_decode(
@@ -66,15 +65,17 @@ def main(cfg: DictConfig) -> None:
         config=config,
         use_image=True,
         show_progress=True,
+        condition_suffix="_imageon",
     )
     print("\nExtraction summary (Image ON):")
     print(summary_with)
 
     print("\nRunning probing experiments (Image ON)...")
+    # Modify task names to include suffix for probing
+    tasks_imageon = [f"{task}_imageon" for task in config.experiment.tasks]
     probe_with = probe_all_tasks(
         results_root=comparison_root,
-        tasks=config.experiment.tasks,
-        suffix="_imageon",
+        tasks=tasks_imageon,
         n_folds=config.probe.n_folds,
         seed=config.probe.seed,
         max_iter=config.probe.max_iter,
@@ -93,7 +94,7 @@ def main(cfg: DictConfig) -> None:
     print("=" * 80)
 
     # Override results_root to use new structure for Image OFF
-    config.output.suffix = "_imageoff"
+    # (results_root is already set to comparison_root)
 
     print(f"\nExtracting features for tasks: {config.experiment.tasks}")
     summary_without = run_extract_probe_decode(
@@ -101,15 +102,17 @@ def main(cfg: DictConfig) -> None:
         config=config,
         use_image=False,
         show_progress=True,
+        condition_suffix="_imageoff",
     )
     print("\nExtraction summary (Image OFF):")
     print(summary_without)
 
     print("\nRunning probing experiments (Image OFF)...")
+    # Modify task names to include suffix for probing
+    tasks_imageoff = [f"{task}_imageoff" for task in config.experiment.tasks]
     probe_without = probe_all_tasks(
         results_root=comparison_root,
-        tasks=config.experiment.tasks,
-        suffix="_imageoff",
+        tasks=tasks_imageoff,
         n_folds=config.probe.n_folds,
         seed=config.probe.seed,
         max_iter=config.probe.max_iter,
@@ -151,8 +154,8 @@ def main(cfg: DictConfig) -> None:
     print("-" * 80)
 
     for task in config.experiment.tasks:
-        with_row = probe_with[probe_with["task"] == task]
-        without_row = probe_without[probe_without["task"] == task]
+        with_row = probe_with[probe_with["task"] == f"{task}_imageon"]
+        without_row = probe_without[probe_without["task"] == f"{task}_imageoff"]
 
         if not with_row.empty and not without_row.empty:
             acc_with = with_row["best_acc"].values[0]

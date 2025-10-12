@@ -83,9 +83,6 @@ def main(cfg: DictConfig) -> None:
     print(f"  Comparison dir: {comparison_root}")
     print(f"\nOutput directory: {similarity_root}")
 
-    # Layer order
-    layer_order = ["pre", "post"] + [f"l{i:02d}" for i in range(36)]
-
     # Summary rows
     summary_rows: list[dict] = []
 
@@ -121,6 +118,11 @@ def main(cfg: DictConfig) -> None:
             continue
 
         print(f"Loaded {len(features_imageon)} layers, {len(labels_imageon)} samples")
+
+        # Infer layer order from loaded features
+        vision_keys = [k for k in ["v_enc", "v_proj"] if k in features_imageon]
+        llm_layers = sorted([k for k in features_imageon if k.startswith("l") and k[:3].replace("l", "").isdigit()])
+        layer_order = vision_keys + llm_layers
 
         # Compute similarities
         print("\nComputing similarity metrics...")

@@ -183,8 +183,12 @@ def main(cfg: DictConfig) -> None:
             json.dump(results_json, f, indent=2)
         print(f"\nSaved results to: {output_path}")
 
+        # Infer layer order from loaded features
+        vision_keys = [k for k in ["v_enc", "v_proj"] if k in features_imageon]
+        llm_layers = sorted([k for k in features_imageon if k.startswith("l") and k[:3].replace("l", "").isdigit()])
+        layer_order = vision_keys + llm_layers
+
         # Summarize results
-        layer_order = ["pre", "post"] + [f"l{i:02d}" for i in range(36)]
         summary = summarize_cross_condition_results(results, layer_order=layer_order)
 
         # Save summary arrays
@@ -300,7 +304,7 @@ def main(cfg: DictConfig) -> None:
                     )
 
                     # Plot cross-condition matrix for selected layers
-                    selected_layers = [f"l{i:02d}" for i in range(36)]
+                    selected_layers = [k for k in task_results if k.startswith("l") and k[:3].replace("l", "").isdigit()]
                     for layer in selected_layers:
                         if layer in task_results:
                             matrix_plot_path = plots_dir / f"cross_condition_matrix_{layer}.png"
