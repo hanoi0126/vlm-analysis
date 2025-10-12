@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.config.schema import Config
 from src.models.registry import create_extractor
 from src.probing import probe_all_tasks, run_extract_probe_decode
+from src.utils import get_experiment_output_dir
 from src.visualization import plot_comparison
 
 
@@ -43,6 +44,11 @@ def main(cfg: DictConfig) -> None:
     print("Model loaded successfully")
     print(f"Tap points: {extractor.get_tap_points()[:5]}... ({len(extractor.get_tap_points())} total)")
 
+    # Set up experiment output directory
+    experiment_name = "comparison"
+    comparison_root = get_experiment_output_dir(config.output.results_root, experiment_name, config.model.model_id)
+    print(f"\nExperiment output directory: {comparison_root}")
+
     # =========================================================================
     # Part 1: Run with images (Image ON)
     # =========================================================================
@@ -50,8 +56,9 @@ def main(cfg: DictConfig) -> None:
     print("PART 1: Running WITH images (Image ON)")
     print("=" * 80)
 
-    suffix_with_img = config.output.suffix + "_imageon"
-    config.output.suffix = suffix_with_img
+    # Override results_root to use new structure for Image ON
+    config.output.results_root = comparison_root
+    config.output.suffix = "_imageon"
 
     print(f"\nExtracting features for tasks: {config.experiment.tasks}")
     summary_with = run_extract_probe_decode(
@@ -65,9 +72,9 @@ def main(cfg: DictConfig) -> None:
 
     print("\nRunning probing experiments (Image ON)...")
     probe_with = probe_all_tasks(
-        results_root=config.output.results_root,
+        results_root=comparison_root,
         tasks=config.experiment.tasks,
-        suffix=suffix_with_img,
+        suffix="_imageon",
         n_folds=config.probe.n_folds,
         seed=config.probe.seed,
         max_iter=config.probe.max_iter,
@@ -85,8 +92,8 @@ def main(cfg: DictConfig) -> None:
     print("PART 2: Running WITHOUT images (Image OFF - Text-only with description)")
     print("=" * 80)
 
-    suffix_no_img = config.output.suffix.replace("_imageon", "") + "_imageoff"
-    config.output.suffix = suffix_no_img
+    # Override results_root to use new structure for Image OFF
+    config.output.suffix = "_imageoff"
 
     print(f"\nExtracting features for tasks: {config.experiment.tasks}")
     summary_without = run_extract_probe_decode(
@@ -100,9 +107,9 @@ def main(cfg: DictConfig) -> None:
 
     print("\nRunning probing experiments (Image OFF)...")
     probe_without = probe_all_tasks(
-        results_root=config.output.results_root,
+        results_root=comparison_root,
         tasks=config.experiment.tasks,
-        suffix=suffix_no_img,
+        suffix="_imageoff",
         n_folds=config.probe.n_folds,
         seed=config.probe.seed,
         max_iter=config.probe.max_iter,
@@ -122,10 +129,10 @@ def main(cfg: DictConfig) -> None:
         print("=" * 80)
 
         plot_comparison(
-            results_root=config.output.results_root,
+            results_root=comparison_root,
             tasks=config.experiment.tasks,
-            suffix_with_img=suffix_with_img,
-            suffix_no_img=suffix_no_img,
+            suffix_with_img="_imageon",
+            suffix_no_img="_imageoff",
             title_suffix=f"{config.model.model_id} (k={config.probe.n_folds})",
         )
 
@@ -135,8 +142,9 @@ def main(cfg: DictConfig) -> None:
     print("\n" + "=" * 80)
     print("COMPARISON SUMMARY")
     print("=" * 80)
-    print(f"\nImage ON results:  {config.output.results_root}/*{suffix_with_img}")
-    print(f"Image OFF results: {config.output.results_root}/*{suffix_no_img}")
+    print(f"\nExperiment results: {comparison_root}")
+    print(f"  Image ON:  {comparison_root}/*_imageon")
+    print(f"  Image OFF: {comparison_root}/*_imageoff")
     print("\nBest layers comparison:")
     print("-" * 80)
     print(f"{'Task':<15} {'Image ON (acc)':<20} {'Image OFF (acc)':<20} {'Diff':<10}")

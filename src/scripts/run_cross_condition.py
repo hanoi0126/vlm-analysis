@@ -22,6 +22,7 @@ from src.probing.cross_condition import (
     cross_condition_probe_all_layers,
     summarize_cross_condition_results,
 )
+from src.utils import get_experiment_output_dir
 from src.visualization import (
     plot_cross_condition_gaps,
     plot_cross_condition_matrix,
@@ -93,18 +94,16 @@ def main(cfg: DictConfig) -> None:
     # Convert to Pydantic model for validation
     config = Config(**OmegaConf.to_container(cfg, resolve=True))  # type: ignore[arg-type]
 
-    # Determine suffixes
-    suffix_imageon = config.output.suffix + "_imageon"
-    suffix_imageoff = config.output.suffix + "_imageoff"
-
-    # Output directory for cross-condition results
-    results_root = Path(config.output.results_root)
-    cross_cond_root = results_root / "cross_condition"
+    # Determine experiment directory structure
+    experiment_name = "cross_condition"
+    cross_cond_root = get_experiment_output_dir(config.output.results_root, experiment_name, config.model.model_id)
     cross_cond_root.mkdir(parents=True, exist_ok=True)
 
-    print("\nLooking for features:")
-    print(f"  Image ON:  {results_root}/*{suffix_imageon}")
-    print(f"  Image OFF: {results_root}/*{suffix_imageoff}")
+    # For backward compatibility: look for features in comparison experiment
+    comparison_root = get_experiment_output_dir(config.output.results_root, "comparison", config.model.model_id)
+
+    print("\nLooking for features in comparison experiment:")
+    print(f"  Comparison dir: {comparison_root}")
     print(f"\nOutput directory: {cross_cond_root}")
 
     # =========================================================================
@@ -118,9 +117,9 @@ def main(cfg: DictConfig) -> None:
         print(f"TASK: {task}")
         print("=" * 80)
 
-        # Find directories
-        dir_imageon = results_root / f"{task}{suffix_imageon}"
-        dir_imageoff = results_root / f"{task}{suffix_imageoff}"
+        # Find directories (look in comparison experiment)
+        dir_imageon = comparison_root / f"{task}_imageon"
+        dir_imageoff = comparison_root / f"{task}_imageoff"
 
         if not dir_imageon.exists():
             print(f"[SKIP] Directory not found: {dir_imageon}")
@@ -168,7 +167,7 @@ def main(cfg: DictConfig) -> None:
         all_results[task] = results
 
         # Save results
-        task_output_dir = cross_cond_root / task
+        task_output_dir = get_experiment_output_dir(config.output.results_root, experiment_name, config.model.model_id, task)
         task_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Convert to JSON-serializable format
