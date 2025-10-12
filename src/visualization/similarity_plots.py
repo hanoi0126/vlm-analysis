@@ -5,13 +5,14 @@ and 2D projections of representation spaces.
 """
 
 from pathlib import Path
-from typing import Literal, assert_never
+from typing import Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+from typing_extensions import assert_never
 import umap
 
 from src.visualization.plots import TASK_COLORS

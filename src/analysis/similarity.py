@@ -7,13 +7,14 @@ between representation spaces, including:
 - Procrustes Distance
 """
 
-from typing import Literal, assert_never
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import procrustes
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import rbf_kernel
+from typing_extensions import assert_never
 
 # Constants
 EPSILON = 1e-10  # Small value to avoid division by zero
