@@ -2,13 +2,13 @@
 
 from src.config.schema import ModelConfig
 from src.models.base import BaseFeatureExtractor
+from src.models.llava import LlavaFeatureExtractor
 from src.models.qwen import QwenVLFeatureExtractor
 
 # Model registry mapping
 MODEL_REGISTRY: dict[str, type[BaseFeatureExtractor]] = {
     "qwen": QwenVLFeatureExtractor,
-    # Add more models here as needed
-    # "llava": LlavaFeatureExtractor,
+    "llava": LlavaFeatureExtractor,
 }
 
 
@@ -34,6 +34,14 @@ def create_extractor(config: ModelConfig) -> BaseFeatureExtractor:
 
     # Create extractor with appropriate kwargs
     if config.name == "qwen":
+        return extractor_class(  # type: ignore[call-arg]
+            model_id=config.model_id,
+            device=config.device,
+            int8=config.use_int8,
+            use_fast_processor=config.use_fast_processor,
+            llm_layers=config.llm_layers,
+        )
+    if config.name == "llava":
         return extractor_class(  # type: ignore[call-arg]
             model_id=config.model_id,
             device=config.device,
