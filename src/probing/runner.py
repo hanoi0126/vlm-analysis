@@ -28,6 +28,7 @@ def run_extract_probe_decode(
     config: Config,
     use_image: bool = True,
     show_progress: bool = True,
+    condition_suffix: str = "",
 ) -> pd.DataFrame:
     """
     Run feature extraction, probing, and decoding for specified tasks.
@@ -35,7 +36,9 @@ def run_extract_probe_decode(
     Args:
         extractor: Feature extractor model
         config: Experiment configuration
+        use_image: Whether to use images
         show_progress: Show progress bars
+        condition_suffix: Suffix for output directory (e.g., "_imageon", "_imageoff")
 
     Returns:
         DataFrame with summary results
@@ -75,7 +78,7 @@ def run_extract_probe_decode(
         )
 
         # Buffers for features
-        arr_buf: dict[str, list[np.ndarray]] = {"pre": [], "post": []}
+        arr_buf: dict[str, list[np.ndarray]] = {"v_enc": [], "v_proj": []}
         labels_chunks: list[np.ndarray] = []
         filenames_all: list[str] = []
         gen_texts_all: list[str] = []
@@ -115,10 +118,10 @@ def run_extract_probe_decode(
                 )
 
                 # Collect features
-                if to.pre is not None:
-                    arr_buf["pre"].append(to.pre.detach().cpu().numpy())
-                if to.post is not None:
-                    arr_buf["post"].append(to.post.detach().cpu().numpy())
+                if to.v_enc is not None:
+                    arr_buf["v_enc"].append(to.v_enc.detach().cpu().numpy())
+                if to.v_proj is not None:
+                    arr_buf["v_proj"].append(to.v_proj.detach().cpu().numpy())
                 for name, ten in to.layers.items():
                     if name not in arr_buf:
                         arr_buf[name] = []
@@ -149,7 +152,7 @@ def run_extract_probe_decode(
         x_dict = {k: (np.concatenate(v, axis=0) if len(v) > 0 else None) for k, v in arr_buf.items()}
 
         # Save features
-        outdir = out_root / f"{task}{config.output.suffix}"
+        outdir = out_root / f"{task}{condition_suffix}"
         outdir.mkdir(parents=True, exist_ok=True)
         np.save(outdir / "labels.npy", y)
 
@@ -230,7 +233,6 @@ def run_extract_probe_decode(
 def probe_all_tasks(
     results_root: Path,
     tasks: list[str],
-    suffix: str,
     n_folds: int = 5,
     seed: int = 0,
     max_iter: int = 2000,
@@ -244,7 +246,6 @@ def probe_all_tasks(
     Args:
         results_root: Results root directory
         tasks: List of task names
-        suffix: Directory suffix
         n_folds: Number of CV folds
         seed: Random seed
         max_iter: Max iterations for LogisticRegression
@@ -259,7 +260,7 @@ def probe_all_tasks(
     rows: list[dict] = []
 
     for task in tasks:
-        task_dir = results_root / f"{task}{suffix}"
+        task_dir = results_root / task
 
         if not task_dir.exists():
             # Try to find candidate

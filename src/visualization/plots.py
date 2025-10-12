@@ -109,6 +109,32 @@ def _auto_ylim(
     ax.yaxis.set_major_formatter(formatter=FormatStrFormatter(fmt="%.2f"))
 
 
+def _infer_key_order(results_root: Path, tasks: list[str], suffix: str) -> list[str]:
+    """
+    Infer key order from available metrics files.
+
+    Args:
+        results_root: Results root directory
+        tasks: List of task names
+        suffix: Directory suffix
+
+    Returns:
+        Inferred key order
+    """
+    for task in tasks:
+        mpath = _find_metrics_path(Path(results_root), task, suffix)
+        if mpath is not None:
+            metrics = json.loads(Path(mpath).read_text(encoding="utf-8"))
+            # Extract layer keys and sort them
+            keys = list(metrics.keys())
+            # Separate v_enc/v_proj and layer keys
+            vision_keys = [k for k in keys if k in ["v_enc", "v_proj"]]
+            layer_keys = sorted([k for k in keys if k.startswith("l") and k[:3].replace("l", "").isdigit()])
+            return vision_keys + layer_keys
+    # Fallback to a reasonable default (up to 40 layers should cover most models)
+    return ["v_enc", "v_proj"] + [f"l{i:02d}" for i in range(40)]
+
+
 def plot_probe_curves_multi(
     results_root: Path,
     tasks: list[str],
@@ -124,12 +150,12 @@ def plot_probe_curves_multi(
         results_root: Results root directory
         tasks: List of task names
         suffix: Directory suffix
-        key_order: Order of tap points (default: ['pre', 'post', 'l00', ...])
+        key_order: Order of tap points (default: auto-detected from metrics files)
         title_suffix: Additional title text
         show_legend: Show legend
     """
     if key_order is None:
-        key_order = ["pre", "post"] + [f"l{i:02d}" for i in range(36)]
+        key_order = _infer_key_order(results_root, tasks, suffix)
 
     x: _Array1D[signedinteger[Any]] = np.arange(len(key_order))
 
@@ -202,11 +228,15 @@ def plot_comparison(
         tasks: List of task names
         suffix_with_img: Directory suffix for image-on results
         suffix_no_img: Directory suffix for image-off results
-        key_order: Order of tap points (default: ['pre', 'post', 'l00', ...])
+        key_order: Order of tap points (default: auto-detected from metrics files)
         title_suffix: Additional title text
     """
     if key_order is None:
-        key_order = ["pre", "post"] + [f"l{i:02d}" for i in range(36)]
+        # Try to infer from either suffix
+        key_order = _infer_key_order(results_root, tasks, suffix_with_img)
+        if key_order == ["v_enc", "v_proj"] + [f"l{i:02d}" for i in range(40)]:
+            # If fallback was used, try the other suffix
+            key_order = _infer_key_order(results_root, tasks, suffix_no_img)
 
     x = np.arange(len(key_order))
 
