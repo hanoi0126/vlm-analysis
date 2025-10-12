@@ -65,11 +65,14 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         self._gen_sum: dict[str, torch.Tensor] = {}
         self._gen_cnt: dict[str, int] = {}
 
+        # Store number of layers for dynamic access
+        self._num_llm_layers: int = 0
+
         self._setup_hooks()
 
     def _setup_hooks(self) -> None:
         """Setup forward hooks for feature extraction."""
-        # Visual encoder hooks (pre/post)
+        # Visual encoder hooks (v_enc/v_proj)
         merger = self._get_module(self.model, "model.visual.merger")
         if merger is None:
             error_msg = "visual.merger not found"
@@ -94,7 +97,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
             else:
                 pooled = x.flatten(start_dim=1)
 
-            self._tap.pre = pooled.detach().to("cpu")
+            self._tap.v_enc = pooled.detach().to("cpu")
 
         def merger_hook(module, inputs, output) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN001, ARG001
             if not self._capture_enabled:
@@ -114,7 +117,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
             else:
                 pooled = y.flatten(start_dim=1)
 
-            self._tap.post = pooled.detach().to("cpu")
+            self._tap.v_proj = pooled.detach().to("cpu")
 
         merger.register_forward_pre_hook(merger_pre_hook)
         merger.register_forward_hook(merger_hook)
@@ -128,6 +131,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
                 raise ValueError(error_msg)
 
             num_layers = len(lm_layers)  # type: ignore[arg-type]
+            self._num_llm_layers = num_layers  # Store for later use
             want: list[int] = list(range(num_layers)) if self.llm_layers == "all" else self.llm_layers  # type: ignore[assignment]
 
             for idx in want:
@@ -228,7 +232,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
             batch = self.processor(text=templated, return_tensors="pt", padding=True)
         batch = {k: v.to(self.device) for k, v in batch.items()}
 
-        # Extract features (pre/post/layers)
+        # Extract features (v_enc/v_proj/layers)
         self._tap = TapOutput()
         self._last_bs = len(images) if images is not None else len(texts)
         self._last_attn = batch.get("attention_mask")
@@ -304,10 +308,10 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         Returns:
             List of tap point names
         """
-        points = ["pre", "post"]
+        points = ["v_enc", "v_proj"]
         if self.llm_layers == "all":
-            # Assuming 36 layers for Qwen2.5-VL-3B
-            points += [f"l{i:02d}" for i in range(36)]
+            # Use dynamically detected number of layers
+            points += [f"l{i:02d}" for i in range(self._num_llm_layers)]
         elif isinstance(self.llm_layers, list):
             points += [f"l{i:02d}" for i in self.llm_layers]
         return points

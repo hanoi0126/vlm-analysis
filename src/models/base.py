@@ -10,8 +10,8 @@ import torch
 class TapOutput:
     """Output from feature extraction."""
 
-    pre: torch.Tensor | None = None  # (B, D_pre) — Visual Encoder output
-    post: torch.Tensor | None = None  # (B, D_post) — Projection Layer output
+    v_enc: torch.Tensor | None = None  # (B, D) — Vision Encoder output
+    v_proj: torch.Tensor | None = None  # (B, D) — Vision projected to language space
     layers: dict[str, torch.Tensor] = field(default_factory=dict)  # {'l00': (B,D), ...}
     gen_texts: list[str] | None = None  # Generated texts (new tokens only)
     gen_parsed: list[str | None] | None = None  # Parsed {answer}
@@ -62,5 +62,5 @@ class BaseFeatureExtractor(ABC, torch.nn.Module):
         Get list of available feature tap points.
 
         Returns:
-            List of tap point names (e.g., ['pre', 'post', 'l00', ...])
+            List of tap point names (e.g., ['v_enc', 'v_proj', 'l00', ...])
         """
