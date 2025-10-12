@@ -31,7 +31,7 @@ class BaseFeatureExtractor(ABC, torch.nn.Module):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
 
     @abstractmethod
-    def forward(  # noqa: PLR0913
+    def forward(
         self,
         images: list,
         texts: list[str] | None = None,

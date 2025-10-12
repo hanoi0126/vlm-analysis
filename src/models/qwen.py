@@ -186,7 +186,7 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         return cur
 
     @torch.no_grad()
-    def forward(  # noqa: PLR0913
+    def forward(
         self,
         images: list | None = None,  # Optional に変更
         texts: list[str] | None = None,
