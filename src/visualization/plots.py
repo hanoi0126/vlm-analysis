@@ -2,14 +2,22 @@
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
+from matplotlib.typing import ColorType
 import numpy as np
+from numpy import dtype, ndarray, signedinteger
+
+if TYPE_CHECKING:
+    from numpy._core.multiarray import _Array1D
+    from numpy._typing._array_like import NDArray
+    from numpy._typing._shape import _AnyShape
 
 # Task colors (fixed for consistency)
-TASK_COLORS = {
+TASK_COLORS: dict[str, ColorType] = {
     "color": mcolors.TABLEAU_COLORS["tab:blue"],
     "shape": mcolors.TABLEAU_COLORS["tab:orange"],
     "location": mcolors.TABLEAU_COLORS["tab:green"],
@@ -20,7 +28,7 @@ TASK_COLORS = {
     "occlusion": mcolors.TABLEAU_COLORS["tab:olive"],
 }
 
-TASK_MARKERS = {
+TASK_MARKERS: dict[str, str] = {
     "color": "o",
     "shape": "s",
     "location": "D",
@@ -48,12 +56,12 @@ def _find_metrics_path(
     Returns:
         Path to metrics.json if found, None otherwise
     """
-    cand = results_root / f"{task}{suffix}" / "metrics.json"
+    cand: Path = results_root / f"{task}{suffix}" / "metrics.json"
     if cand.exists():
         return cand
 
     # Fallback: search for task*
-    cands = sorted(results_root.glob(f"{task}*/metrics.json"))
+    cands: list[Path] = sorted(results_root.glob(pattern=f"{task}*/metrics.json"))
     return cands[0] if cands else None
 
 
@@ -70,38 +78,38 @@ def _auto_ylim(
         curves: List of y-value arrays
         clamp01: Clamp to [0, 1] range
     """
-    vals = []
+    vals: list[Any] = []
     for y in curves:
         if y is None:
             continue  # type: ignore[unreachable]
-        yv = np.asarray(y, dtype=float)
-        yv = yv[np.isfinite(yv)]
-        yv = yv[~np.isnan(yv)]
+        yv: ndarray[_AnyShape, dtype[Any]] = np.asarray(y, dtype=float)
+        yv: ndarray[_AnyShape, dtype[Any]] = yv[np.isfinite(yv)]
+        yv: ndarray[_AnyShape, dtype[Any]] = yv[~np.isnan(yv)]
         if yv.size:
             vals.append(yv)
 
     if not vals:
         return
 
-    v = np.concatenate(vals)
+    v: NDArray[Any] = np.concatenate(vals)
     lo, hi = float(np.min(v)), float(np.max(v))
 
     if lo == hi:
         lo -= 0.05
         hi += 0.05
 
-    pad = (hi - lo) * 0.08 + 0.02
+    pad: float = (hi - lo) * 0.08 + 0.02
     lo, hi = lo - pad, hi + pad
 
     if clamp01:
         lo, hi = max(0.0, lo), min(1.0, hi)
 
-    ax.set_ylim(lo, hi)
+    ax.set_ylim(bottom=lo, top=hi)
     ax.margins(y=0.05)
-    ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+    ax.yaxis.set_major_formatter(formatter=FormatStrFormatter(fmt="%.2f"))
 
 
-def plot_probe_curves_multi(  # noqa: PLR0913
+def plot_probe_curves_multi(
     results_root: Path,
     tasks: list[str],
     suffix: str = "_qwen3b_llmtap",
@@ -123,7 +131,7 @@ def plot_probe_curves_multi(  # noqa: PLR0913
     if key_order is None:
         key_order = ["pre", "post"] + [f"l{i:02d}" for i in range(36)]
 
-    x = np.arange(len(key_order))
+    x: _Array1D[signedinteger[Any]] = np.arange(len(key_order))
 
     fig_acc, ax_acc = plt.subplots(figsize=(12, 6))
     fig_auc, ax_auc = plt.subplots(figsize=(12, 6))
@@ -133,24 +141,24 @@ def plot_probe_curves_multi(  # noqa: PLR0913
     missing: list[str] = []
 
     for task in tasks:
-        mpath = _find_metrics_path(Path(results_root), task, suffix)
+        mpath: Path | None = _find_metrics_path(results_root=Path(results_root), task=task, suffix=suffix)
         if mpath is None:
             missing.append(task)
             continue
 
-        metrics = json.loads(Path(mpath).read_text(encoding="utf-8"))
+        metrics = json.loads(s=Path(mpath).read_text(encoding="utf-8"))
 
-        y_acc = np.array(
+        y_acc: NDArray[Any] = np.array(
             [metrics[k]["acc_mean"] if k in metrics else np.nan for k in key_order],
             dtype=float,
         )
-        y_auc = np.array(
+        y_auc: NDArray[Any] = np.array(
             [metrics[k]["auc_mean"] if k in metrics else np.nan for k in key_order],
             dtype=float,
         )
 
-        color = TASK_COLORS.get(task)
-        marker = TASK_MARKERS.get(task, "o")
+        color: ColorType | None = TASK_COLORS.get(task)
+        marker: str = TASK_MARKERS.get(task, "o")
 
         ax_acc.plot(x, y_acc, marker=marker, linestyle="-", label=task, color=color)
         ax_auc.plot(x, y_auc, marker=marker, linestyle="-", label=task, color=color)
@@ -160,15 +168,15 @@ def plot_probe_curves_multi(  # noqa: PLR0913
 
     # Format axes
     for ax, what in [(ax_acc, "Accuracy (mean)"), (ax_auc, "ROC-AUC (mean)")]:
-        ax.set_xticks(x)
-        ax.set_xticklabels(key_order, rotation=90)
+        ax.set_xticks(ticks=x)
+        ax.set_xticklabels(labels=key_order, rotation=90)
         ax.grid(visible=True, linestyle="--", alpha=0.6)
         if show_legend:
             ax.legend(title="task")
-        ax.set_title(f"Probing — {what}" + (f" — {title_suffix}" if title_suffix else ""))
+        ax.set_title(label=f"Probing — {what}" + (f" — {title_suffix}" if title_suffix else ""))
 
-    _auto_ylim(ax_acc, acc_curves, clamp01=True)
-    _auto_ylim(ax_auc, auc_curves, clamp01=True)
+    _auto_ylim(ax=ax_acc, curves=acc_curves, clamp01=True)
+    _auto_ylim(ax=ax_auc, curves=auc_curves, clamp01=True)
 
     fig_acc.tight_layout()
     fig_auc.tight_layout()
@@ -178,7 +186,7 @@ def plot_probe_curves_multi(  # noqa: PLR0913
         print("[SKIP] metrics.json not found for:", ", ".join(missing))
 
 
-def plot_comparison(  # noqa: PLR0913
+def plot_comparison(
     results_root: Path,
     tasks: list[str],
     suffix_with_img: str = "_qwen3b_llmtap",
@@ -313,7 +321,7 @@ def plot_comparison(  # noqa: PLR0913
     print(f"Comparison plots generated for tasks: {', '.join(tasks)}")
 
 
-def plot_cross_condition_gaps(  # noqa: PLR0913
+def plot_cross_condition_gaps(
     layers: np.ndarray,
     gap_A_to_B: np.ndarray,  # noqa: N803
     gap_B_to_A: np.ndarray,  # noqa: N803
@@ -378,7 +386,7 @@ def plot_cross_condition_gaps(  # noqa: PLR0913
     ax.set_ylabel("Accuracy Gap (same - cross)", fontsize=10)
 
     # Set y-axis formatter
-    ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+    ax.yaxis.set_major_formatter(formatter=FormatStrFormatter(fmt="%.2f"))
 
     fig.tight_layout()
 
@@ -390,7 +398,7 @@ def plot_cross_condition_gaps(  # noqa: PLR0913
     plt.close(fig)
 
 
-def plot_cross_condition_prober_accuracy(  # noqa: PLR0913
+def plot_cross_condition_prober_accuracy(
     layers: np.ndarray,
     A_same_acc: np.ndarray,  # noqa: N803
     A_cross_acc: np.ndarray,  # noqa: N803
