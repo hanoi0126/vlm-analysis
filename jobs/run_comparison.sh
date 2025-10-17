@@ -1,7 +1,7 @@
 #!/bin/sh
 #PJM -L rscgrp=share
 #PJM -L gpu=1
-#PJM -L elapse=1:30:00
+#PJM -L elapse=2:00:00
 #PJM -g gb20
 #PJM -j
 #PJM -o logs/comparison/%j.out

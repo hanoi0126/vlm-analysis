@@ -10,25 +10,62 @@ def get_model_short_name(model_id: str) -> str:
         model_id: HuggingFace model ID (e.g., "Qwen/Qwen2.5-VL-3B-Instruct")
 
     Returns:
-        Short model name (e.g., "qwen3b")
+        Short model name (e.g., "qwen25_3b")
 
     Examples:
         >>> get_model_short_name("Qwen/Qwen2.5-VL-3B-Instruct")
-        'qwen3b'
+        'qwen25_3b'
+        >>> get_model_short_name("Qwen/Qwen2.5-VL-7B-Instruct")
+        'qwen25_7b'
+        >>> get_model_short_name("OpenGVLab/InternVL3_5-4B")
+        'internvl35_4b'
         >>> get_model_short_name("meta-llama/Llama-3.2-11B-Vision-Instruct")
-        'llama11b'
+        'llama32_11b'
     """
     model_id_lower = model_id.lower()
 
-    # Extract model family name
-    if "qwen" in model_id_lower:
+    # Extract model family name and version
+    family = ""
+    version = ""
+
+    if "internvl" in model_id_lower:
+        family = "internvl"
+        # Extract version: InternVL3_5-4B -> 3_5 or 3.5
+        if "internvl3" in model_id_lower:
+            if "3_5" in model_id_lower or "3.5" in model_id_lower:
+                version = "35"
+            else:
+                version = "3"
+        elif "internvl2" in model_id_lower:
+            version = "2"
+    elif "qwen" in model_id_lower:
         family = "qwen"
+        # Extract version: Qwen2.5-VL -> 2.5
+        if "qwen2.5" in model_id_lower or "qwen2_5" in model_id_lower:
+            version = "25"
+        elif "qwen2" in model_id_lower:
+            version = "2"
+        elif "qwen3" in model_id_lower:
+            version = "3"
     elif "llama" in model_id_lower:
         family = "llama"
+        # Extract version: Llama-3.2 -> 3.2
+        if "llama-3.2" in model_id_lower or "llama_3_2" in model_id_lower:
+            version = "32"
+        elif "llama-3.1" in model_id_lower or "llama_3_1" in model_id_lower:
+            version = "31"
+        elif "llama-3" in model_id_lower or "llama_3" in model_id_lower:
+            version = "3"
     elif "phi" in model_id_lower:
         family = "phi"
+        if "phi-3" in model_id_lower or "phi_3" in model_id_lower:
+            version = "3"
     elif "gemma" in model_id_lower:
         family = "gemma"
+        if "gemma-3" in model_id_lower or "gemma_3" in model_id_lower:
+            version = "3"
+        elif "gemma-2" in model_id_lower or "gemma_2" in model_id_lower:
+            version = "2"
     elif "molmo" in model_id_lower:
         family = "molmo"
     else:
@@ -39,17 +76,25 @@ def get_model_short_name(model_id: str) -> str:
         else:
             family = parts[0].split("-")[0].lower()
 
-    # Extract size indicator (e.g., 3b, 7b, 11b)
+    # Extract size indicator (e.g., 3b, 7b, 11b, 4b)
     size = ""
-    for part in model_id_lower.replace("-", " ").replace(".", " ").split():
-        if "b" in part and any(c.isdigit() for c in part):
+    for part in model_id_lower.replace("-", "_").split("_"):
+        # Look for patterns like "3b", "7b", "11b", "4b"
+        if part.endswith("b") and any(c.isdigit() for c in part):
             # Extract number + "b"
             num_part = "".join(c for c in part if c.isdigit() or c == ".")
             if num_part:
                 size = num_part.replace(".", "") + "b"
                 break
 
-    return f"{family}{size}" if size else family
+    # Construct name: family + version + _ + size
+    if version and size:
+        return f"{family}{version}_{size}"
+    if size:
+        return f"{family}_{size}"
+    if version:
+        return f"{family}{version}"
+    return family
 
 
 def get_experiment_output_dir(

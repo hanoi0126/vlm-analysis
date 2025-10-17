@@ -46,6 +46,7 @@ ignore = [
     "PLR0912", # use-enumerate
     "PLR0915", # use-f-string
     "UP035", # deprecated-import
+    "S105", # unreachable-code
 
     # default ignore
     "PTH",

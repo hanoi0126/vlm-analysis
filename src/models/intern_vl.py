@@ -3,8 +3,9 @@
 import re
 from typing import TYPE_CHECKING
 
+from PIL import Image
 import torch
-import torchvision as tv
+from torchvision import transforms
 from transformers import AutoModel, AutoTokenizer
 from transformers.utils.quantization_config import BitsAndBytesConfig
 
@@ -56,6 +57,16 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
             pretrained_model_name_or_path=model_id, trust_remote_code=True, use_fast=use_fast_processor
         )
 
+        # Create image transform
+        self.image_size = 448
+        self.image_transform = self._build_transform(self.image_size)
+
+        # Calculate num_image_token based on model config
+        # InternVL uses patch-based tokenization
+        patch_size = getattr(self.model.config.vision_config, "patch_size", 14)
+        downsample_ratio = getattr(self.model.config, "downsample_ratio", 0.5)
+        self.num_image_token = int((self.image_size // patch_size) ** 2 * (downsample_ratio**2))
+
         # Setup hooks
         self.llm_layers = llm_layers
         self._tap = TapOutput()
@@ -71,6 +82,82 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
         self._num_llm_layers: int = 0
 
         self._setup_hooks()
+
+    def _build_transform(self, input_size: int) -> transforms.Compose:
+        """Build image transformation pipeline."""
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+        return transforms.Compose(
+            [
+                transforms.Lambda(lambda img: img.convert("RGB") if isinstance(img, Image.Image) else img),
+                transforms.Resize((input_size, input_size), interpolation=transforms.InterpolationMode.BICUBIC),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std),
+            ]
+        )
+
+    def _find_closest_aspect_ratio(
+        self, aspect_ratio: float, target_ratios: list[tuple[int, int]], width: int, height: int, image_size: int
+    ) -> tuple[int, int]:
+        """Find the closest aspect ratio from target ratios."""
+        best_ratio_diff = float("inf")
+        best_ratio = (1, 1)
+        area = width * height
+        for ratio in target_ratios:
+            target_aspect_ratio = ratio[0] / ratio[1]
+            ratio_diff = abs(aspect_ratio - target_aspect_ratio)
+            if ratio_diff < best_ratio_diff:
+                best_ratio_diff = ratio_diff
+                best_ratio = ratio
+            elif ratio_diff == best_ratio_diff:
+                if area > 0.5 * image_size * image_size * ratio[0] * ratio[1]:
+                    best_ratio = ratio
+        return best_ratio
+
+    def _dynamic_preprocess(
+        self, image: Image.Image, min_num: int = 1, max_num: int = 12, image_size: int = 448, use_thumbnail: bool = False
+    ) -> list[Image.Image]:
+        """Dynamically preprocess image into multiple patches based on aspect ratio."""
+        orig_width, orig_height = image.size
+        aspect_ratio = orig_width / orig_height
+
+        # Calculate target ratios
+        target_ratios = {
+            (i, j)
+            for n in range(min_num, max_num + 1)
+            for i in range(1, n + 1)
+            for j in range(1, n + 1)
+            if i * j <= max_num and i * j >= min_num
+        }
+        target_ratios_list = sorted(target_ratios, key=lambda x: x[0] * x[1])
+
+        # Find the closest aspect ratio
+        target_aspect_ratio = self._find_closest_aspect_ratio(aspect_ratio, target_ratios_list, orig_width, orig_height, image_size)
+
+        # Calculate target dimensions
+        target_width = image_size * target_aspect_ratio[0]
+        target_height = image_size * target_aspect_ratio[1]
+        blocks = target_aspect_ratio[0] * target_aspect_ratio[1]
+
+        # Resize the image
+        resized_img = image.resize((target_width, target_height))
+        processed_images = []
+        for i in range(blocks):
+            box = (
+                (i % (target_width // image_size)) * image_size,
+                (i // (target_width // image_size)) * image_size,
+                ((i % (target_width // image_size)) + 1) * image_size,
+                ((i // (target_width // image_size)) + 1) * image_size,
+            )
+            # Split the image
+            split_img = resized_img.crop(box)
+            processed_images.append(split_img)
+
+        if use_thumbnail and len(processed_images) != 1:
+            thumbnail_img = image.resize((image_size, image_size))
+            processed_images.append(thumbnail_img)
+
+        return processed_images
 
     def _setup_hooks(self) -> None:
         """Setup forward hooks for feature extraction."""
@@ -97,7 +184,7 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
                 else:
                     pooled = y.flatten(start_dim=0)
 
-                self._tap.v_enc = pooled.detach().to("cpu")
+                self._tap.v_enc = pooled.detach().float().to("cpu")
 
             vision_model.register_forward_hook(hook=vision_hook)
 
@@ -125,7 +212,7 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
                 else:
                     pooled = y.flatten(start_dim=0)
 
-                self._tap.v_proj = pooled.detach().to("cpu")
+                self._tap.v_proj = pooled.detach().float().to("cpu")
 
             projector.register_forward_hook(projector_hook)
 
@@ -165,7 +252,7 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
                         if self._in_gen:
                             # During generation: accumulate last token
                             pooled = y[:, -1, :]
-                            cpu = pooled.detach().to("cpu")
+                            cpu = pooled.detach().float().to("cpu")
                             if tag not in self._gen_sum:
                                 self._gen_sum[tag] = torch.zeros_like(cpu)
                                 self._gen_cnt[tag] = 0
@@ -179,7 +266,7 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
                                 idxs = self._last_attn.sum(dim=1) - 1
                                 ar = torch.arange(y.shape[0], device=y.device)
                                 pooled = y[ar, idxs, :]
-                            self._tap.layers[tag] = pooled.detach().to("cpu")
+                            self._tap.layers[tag] = pooled.detach().float().to("cpu")
 
                     return _hook
 
@@ -235,6 +322,58 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
         if texts is None:
             texts = [""] * (len(images) if images else 1)
 
+        # InternVL3.5 requires processing one sample at a time due to dynamic patching
+        # We'll aggregate results from individual forward passes
+        batch_size = len(texts)
+
+        # For batched processing, we need to handle each sample individually
+        if batch_size > 1:
+            # Process each sample individually and aggregate
+            tap_outputs = []
+            for i in range(batch_size):
+                img_list = [images[i]] if (use_image and images is not None) else None
+                text_list = [texts[i]]
+                tap_out = self._forward_single(
+                    images=img_list,
+                    texts=text_list,
+                    use_image=use_image,
+                    decode=decode,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=do_sample,
+                    generation_kwargs=generation_kwargs,
+                )
+                tap_outputs.append(tap_out)
+
+            # Aggregate results
+            self._tap = self._aggregate_tap_outputs(tap_outputs)
+            return self._tap
+
+        # Single sample - direct processing
+        return self._forward_single(
+            images=images,
+            texts=texts,
+            use_image=use_image,
+            decode=decode,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            generation_kwargs=generation_kwargs,
+        )
+
+    def _forward_single(
+        self,
+        images: list | None = None,
+        texts: list[str] | None = None,
+        *,
+        use_image: bool = True,
+        decode: bool = False,
+        max_new_tokens: int = 32,
+        do_sample: bool = False,
+        generation_kwargs: dict | None = None,
+    ) -> TapOutput:
+        """Process a single sample."""
+        if texts is None:
+            texts = [""] * (len(images) if images else 1)
+
         # Build prompts based on use_image
         if use_image:
             if images is None:
@@ -246,56 +385,48 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
             # Text only
             prompts = list(texts)
 
-        # Convert images to pixel_values
+        # Convert images to pixel_values using dynamic_preprocess
         if use_image and images is not None:
-            # Use model's built-in image loading if available
-            pixel_values = []
-            for img in images:
-                if hasattr(self.model, "load_image"):
-                    pv = self.model.load_image(img, max_num=12)  # type: ignore[attr-defined]
-                    # load_image returns a tensor that may already be batched
-                    # We need to handle it properly
-                    if isinstance(pv, torch.Tensor):
-                        pixel_values.append(pv)
-                    else:
-                        pixel_values.append(pv)
-                else:
-                    transform = tv.transforms.Compose(
-                        [
-                            tv.transforms.Resize((448, 448)),
-                            tv.transforms.ToTensor(),
-                            tv.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                        ]
-                    )
-                    pv = transform(img).unsqueeze(0)
-                    pixel_values.append(pv)
-
-            # Stack pixel values - for InternVL, each load_image returns individual tensor
-            if len(pixel_values) > 0:
-                # Convert to model's dtype (usually bfloat16)
-                model_dtype = next(self.model.parameters()).dtype
-                pixel_values_list = [pv.to(device=self.device, dtype=model_dtype) for pv in pixel_values]
-                pixel_values_tensor = pixel_values_list
-            else:
-                pixel_values_tensor = None
+            img = images[0]
+            # Use dynamic preprocessing like official implementation
+            processed_images = self._dynamic_preprocess(img, min_num=1, max_num=12, image_size=self.image_size, use_thumbnail=True)
+            pixel_values = torch.stack([self.image_transform(im) for im in processed_images])
+            model_dtype = next(self.model.parameters()).dtype
+            pixel_values = pixel_values.to(device=self.device, dtype=model_dtype)
+            num_patches = pixel_values.shape[0]
         else:
-            pixel_values_tensor = None
+            pixel_values = None
+            num_patches = 0
+
+        # Setup img_context_token_id for InternVL
+        img_context_token = "<IMG_CONTEXT>"
+        img_context_token_id = self.tokenizer.convert_tokens_to_ids(img_context_token)
+        self.model.img_context_token_id = img_context_token_id
+
+        # Prepare inputs using InternVL's approach
+        if use_image and pixel_values is not None:
+            # Replace <image> with special tokens like official implementation
+            img_start_token = "<img>"
+            img_end_token = "</img>"
+            image_tokens = img_start_token + img_context_token * self.num_image_token * num_patches + img_end_token
+            prompts = [p.replace("<image>", image_tokens, 1) for p in prompts]
 
         # Tokenize text
         inputs = self.tokenizer(prompts, return_tensors="pt", padding=True)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-        # Add pixel values if using images
-        if pixel_values_tensor is not None:
-            # InternVL expects pixel_values as a list of tensors (one per image)
-            inputs["pixel_values"] = pixel_values_tensor
-            # Add image_flags to indicate which samples have images
-            batch_size = len(prompts)
-            inputs["image_flags"] = torch.tensor([1] * batch_size, dtype=torch.long).to(self.device)
+        # Add pixel values and image flags
+        if pixel_values is not None:
+            inputs["pixel_values"] = pixel_values
+            inputs["image_flags"] = torch.tensor([1], dtype=torch.long).to(self.device)
         else:
-            # No images - set image_flags to 0
-            batch_size = len(prompts)
-            inputs["image_flags"] = torch.tensor([0] * batch_size, dtype=torch.long).to(self.device)
+            # For text-only: set pixel_values to a dummy tensor
+            # InternVL forward() expects pixel_values to be present
+            dummy_pixel = torch.zeros(
+                (1, 3, self.image_size, self.image_size), dtype=next(self.model.parameters()).dtype, device=self.device
+            )
+            inputs["pixel_values"] = dummy_pixel
+            inputs["image_flags"] = torch.tensor([0], dtype=torch.long).to(self.device)
 
         # Extract features (v_enc/v_proj/layers)
         self._tap = TapOutput()
@@ -330,15 +461,33 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
             eos_token_id = self.tokenizer.eos_token_id
             pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else eos_token_id
 
-            gen = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=_do_sample,
-                pad_token_id=pad_token_id,
-                eos_token_id=eos_token_id,
-                return_dict_in_generate=True,
-                **gen_kwargs,
-            )
+            # Prepare generation inputs (remove image_flags as it's not needed for generate)
+            gen_inputs = {k: v for k, v in inputs.items() if k != "image_flags"}
+
+            # For text-only mode, use language model directly to avoid assertion errors in InternVL's generate
+            if use_image:
+                gen = self.model.generate(
+                    **gen_inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=_do_sample,
+                    pad_token_id=pad_token_id,
+                    eos_token_id=eos_token_id,
+                    return_dict_in_generate=True,
+                    **gen_kwargs,
+                )
+            else:
+                # Text-only: use language model directly
+                # Remove pixel_values as language model doesn't need it
+                text_gen_inputs = {k: v for k, v in gen_inputs.items() if k not in ["pixel_values"]}
+                gen = self.model.language_model.generate(
+                    **text_gen_inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=_do_sample,
+                    pad_token_id=pad_token_id,
+                    eos_token_id=eos_token_id,
+                    return_dict_in_generate=True,
+                    **gen_kwargs,
+                )
 
             # Decode new tokens only
             prompt_lens = inputs["attention_mask"].sum(dim=1)
@@ -365,6 +514,43 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
             self._gen_sum, self._gen_cnt = {}, {}
 
         return self._tap
+
+    def _aggregate_tap_outputs(self, tap_outputs: list[TapOutput]) -> TapOutput:
+        """Aggregate multiple TapOutput objects into one."""
+        aggregated = TapOutput()
+
+        # Aggregate v_enc
+        if all(t.v_enc is not None for t in tap_outputs):
+            aggregated.v_enc = torch.cat([t.v_enc for t in tap_outputs], dim=0)
+
+        # Aggregate v_proj
+        if all(t.v_proj is not None for t in tap_outputs):
+            aggregated.v_proj = torch.cat([t.v_proj for t in tap_outputs], dim=0)
+
+        # Aggregate layers
+        if tap_outputs:
+            all_layer_keys = set()
+            for tap in tap_outputs:
+                all_layer_keys.update(tap.layers.keys())
+
+            for key in all_layer_keys:
+                if all(key in t.layers for t in tap_outputs):
+                    aggregated.layers[key] = torch.cat([t.layers[key] for t in tap_outputs], dim=0)
+
+        # Aggregate gen_texts and gen_parsed
+        if any(t.gen_texts for t in tap_outputs):
+            aggregated.gen_texts = []
+            for tap in tap_outputs:
+                if tap.gen_texts:
+                    aggregated.gen_texts.extend(tap.gen_texts)
+
+        if any(t.gen_parsed for t in tap_outputs):
+            aggregated.gen_parsed = []
+            for tap in tap_outputs:
+                if tap.gen_parsed:
+                    aggregated.gen_parsed.extend(tap.gen_parsed)
+
+        return aggregated
 
     def get_tap_points(self) -> list[str]:
         """
