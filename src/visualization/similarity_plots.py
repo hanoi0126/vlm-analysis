@@ -17,7 +17,7 @@ from sklearn.manifold import TSNE
 from typing_extensions import assert_never
 import umap
 
-from src.visualization.plots import TASK_COLORS
+from src.visualization.probing_plots import TASK_COLORS
 from src.visualization.styles import (
     add_style_annotation,
     get_line_kwargs,

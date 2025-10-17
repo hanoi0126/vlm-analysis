@@ -85,6 +85,12 @@ def run_extract_probe_decode(
         gen_parsed_all: list[str | None] = []
         questions_all: list[str] = []
 
+        # Buffers for logits (if extracting)
+        logits_buf: dict[str, list[np.ndarray]] = {}
+        choice_logits_buf: dict[str, list[np.ndarray]] = {}
+        choice_token_ids_all: list[list[int]] = []
+        options_all: list[list[str]] = []
+
         # Iterate over dataset
         it_total = math.ceil(len(ds) / config.batch_size)
         it = tqdm(dl, total=it_total, disable=not show_progress, desc=f"{task}")
@@ -108,6 +114,8 @@ def run_extract_probe_decode(
                         texts.append(text)
 
                 # Extract features
+                # Check if we should extract logits (only for tasks with options)
+                extract_logits = hasattr(config, "logit_analysis") and config.logit_analysis.extract_logits
                 to = extractor(
                     b["image"] if use_image else None,
                     texts=texts,
@@ -115,6 +123,8 @@ def run_extract_probe_decode(
                     decode=config.decode,
                     max_new_tokens=config.max_new_tokens,
                     do_sample=config.do_sample,
+                    extract_logits=extract_logits,
+                    options=b.get("options") if extract_logits else None,
                 )
 
                 # Collect features
@@ -126,6 +136,24 @@ def run_extract_probe_decode(
                     if name not in arr_buf:
                         arr_buf[name] = []
                     arr_buf[name].append(ten.detach().cpu().numpy())
+
+                # Collect logits if extracted
+                if extract_logits:
+                    for name, ten in to.logits.items():
+                        if name not in logits_buf:
+                            logits_buf[name] = []
+                        logits_buf[name].append(ten.detach().cpu().numpy())
+
+                    for name, ten in to.choice_logits.items():
+                        if name not in choice_logits_buf:
+                            choice_logits_buf[name] = []
+                        choice_logits_buf[name].append(ten.detach().cpu().numpy())
+
+                    if to.choice_token_ids is not None:
+                        choice_token_ids_all.extend(to.choice_token_ids)
+
+                    if b.get("options") is not None:
+                        options_all.extend(b["options"])
 
                 # Collect labels and questions
                 if is_multi:
@@ -161,6 +189,32 @@ def run_extract_probe_decode(
             if v is not None and v.size > 0:
                 np.save(outdir / f"features_{k}.npy", v)
                 saved.append((k, v.shape))
+
+        # Save logits if extracted
+        if extract_logits:
+            # Save choice logits (smaller, more useful)
+            save_choice_logits = config.logit_analysis.save_choice_logits
+            if save_choice_logits:
+                for k, v_list in choice_logits_buf.items():
+                    if len(v_list) > 0:
+                        v_arr = np.concatenate(v_list, axis=0)
+                        np.save(outdir / f"logits_choices_{k}.npy", v_arr)
+
+            # Save full vocab logits (optional, can be large)
+            save_full_logits = config.logit_analysis.save_full_logits
+            if save_full_logits:
+                for k, v_list in logits_buf.items():
+                    if len(v_list) > 0:
+                        v_arr = np.concatenate(v_list, axis=0)
+                        np.save(outdir / f"logits_all_{k}.npy", v_arr)
+
+            # Save choice metadata
+            if len(choice_token_ids_all) > 0:
+                np.save(outdir / "choice_token_ids.npy", np.array(choice_token_ids_all, dtype=object))
+
+            if len(options_all) > 0:
+                with open(outdir / "choice_texts.json", "w", encoding="utf-8") as f:
+                    json.dump(options_all, f, indent=2, ensure_ascii=False)
 
         # Save decode log if enabled
         decode_acc = np.nan

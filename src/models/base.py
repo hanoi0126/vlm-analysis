@@ -15,6 +15,9 @@ class TapOutput:
     layers: dict[str, torch.Tensor] = field(default_factory=dict)  # {'l00': (B,D), ...}
     gen_texts: list[str] | None = None  # Generated texts (new tokens only)
     gen_parsed: list[str | None] | None = None  # Parsed {answer}
+    logits: dict[str, torch.Tensor] = field(default_factory=dict)  # {'l00': (B, vocab_size), ...}
+    choice_logits: dict[str, torch.Tensor] = field(default_factory=dict)  # {'l00': (B, num_choices), ...}
+    choice_token_ids: list[list[int]] | None = None  # Token IDs for each choice (B, num_choices)
 
 
 class BaseFeatureExtractor(ABC, torch.nn.Module):

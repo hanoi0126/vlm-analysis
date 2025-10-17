@@ -317,6 +317,8 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
         max_new_tokens: int = 32,
         do_sample: bool = False,
         generation_kwargs: dict | None = None,
+        extract_logits: bool = False,
+        options: list[list[str]] | None = None,
     ) -> TapOutput:
         """Extract features with or without images."""
         if texts is None:
@@ -333,6 +335,7 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
             for i in range(batch_size):
                 img_list = [images[i]] if (use_image and images is not None) else None
                 text_list = [texts[i]]
+                opt_list = [options[i]] if options is not None else None
                 tap_out = self._forward_single(
                     images=img_list,
                     texts=text_list,
@@ -341,6 +344,8 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
                     max_new_tokens=max_new_tokens,
                     do_sample=do_sample,
                     generation_kwargs=generation_kwargs,
+                    extract_logits=extract_logits,
+                    options=opt_list,
                 )
                 tap_outputs.append(tap_out)
 
@@ -357,6 +362,8 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
             generation_kwargs=generation_kwargs,
+            extract_logits=extract_logits,
+            options=options,
         )
 
     def _forward_single(
@@ -369,6 +376,8 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
         max_new_tokens: int = 32,
         do_sample: bool = False,
         generation_kwargs: dict | None = None,
+        extract_logits: bool = False,
+        options: list[list[str]] | None = None,
     ) -> TapOutput:
         """Process a single sample."""
         if texts is None:
@@ -513,7 +522,79 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
             self._in_gen = False
             self._gen_sum, self._gen_cnt = {}, {}
 
+        # Extract logits if requested
+        if extract_logits and options is not None:
+            self._extract_choice_logits(inputs, options)
+
         return self._tap
+
+    def _extract_choice_logits(self, inputs: dict, options: list[list[str]]) -> None:  # noqa: ARG002
+        """
+        Extract logits for choice tokens from all layers.
+
+        Args:
+            inputs: Input dictionary (unused, kept for consistency)
+            options: List of option lists for each sample (B, num_choices)
+        """
+        lm_head = self.model.language_model.get_output_embeddings()
+
+        if lm_head is None:
+            return
+
+        # Tokenize all options to get first token IDs
+        max_choices = max(len(opts) for opts in options)
+        choice_token_ids = []
+
+        for sample_options in options:
+            sample_tokens = []
+            for opt in sample_options:
+                # Tokenize without special tokens and get first token
+                token_ids = self.tokenizer.encode(opt, add_special_tokens=False)
+                if len(token_ids) > 0:
+                    sample_tokens.append(token_ids[0])
+                else:
+                    # Fallback: use unknown token
+                    sample_tokens.append(self.tokenizer.unk_token_id if self.tokenizer.unk_token_id is not None else 0)
+            choice_token_ids.append(sample_tokens)
+
+        self._tap.choice_token_ids = choice_token_ids
+
+        # Extract logits from each layer
+        for layer_name, hidden_states in self._tap.layers.items():
+            if hidden_states is None or hidden_states.ndim != 2:
+                continue
+
+            # Apply lm_head: (B, hidden_size) -> (B, vocab_size)
+            with torch.no_grad():
+                hidden_states_gpu = hidden_states.to(self.device)
+                vocab_logits = lm_head(hidden_states_gpu)  # (B, vocab_size)
+
+                # Store full logits (optional, can be large)
+                self._tap.logits[layer_name] = vocab_logits.detach().cpu()
+
+                # Extract choice logits
+                choice_logits_batch = []
+                for i, sample_token_ids in enumerate(choice_token_ids):
+                    sample_logits = vocab_logits[i, sample_token_ids]  # (num_choices,)
+                    choice_logits_batch.append(sample_logits)
+
+                # Pad to max_choices and stack
+                choice_logits_padded = []
+                for cl in choice_logits_batch:
+                    if len(cl) < max_choices:
+                        # Pad with very negative values
+                        padding = torch.full(
+                            (max_choices - len(cl),),
+                            float("-inf"),
+                            dtype=cl.dtype,
+                            device=cl.device,
+                        )
+                        padded_cl = torch.cat([cl, padding])
+                    else:
+                        padded_cl = cl
+                    choice_logits_padded.append(padded_cl)
+
+                self._tap.choice_logits[layer_name] = torch.stack(choice_logits_padded).detach().cpu()
 
     def _aggregate_tap_outputs(self, tap_outputs: list[TapOutput]) -> TapOutput:
         """Aggregate multiple TapOutput objects into one."""
@@ -521,15 +602,15 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
 
         # Aggregate v_enc
         if all(t.v_enc is not None for t in tap_outputs):
-            aggregated.v_enc = torch.cat([t.v_enc for t in tap_outputs], dim=0)
+            aggregated.v_enc = torch.cat([t.v_enc for t in tap_outputs if t.v_enc is not None], dim=0)
 
         # Aggregate v_proj
         if all(t.v_proj is not None for t in tap_outputs):
-            aggregated.v_proj = torch.cat([t.v_proj for t in tap_outputs], dim=0)
+            aggregated.v_proj = torch.cat([t.v_proj for t in tap_outputs if t.v_proj is not None], dim=0)
 
         # Aggregate layers
         if tap_outputs:
-            all_layer_keys = set()
+            all_layer_keys: set[str] = set()
             for tap in tap_outputs:
                 all_layer_keys.update(tap.layers.keys())
 
@@ -549,6 +630,33 @@ class InternVLFeatureExtractor(BaseFeatureExtractor):
             for tap in tap_outputs:
                 if tap.gen_parsed:
                     aggregated.gen_parsed.extend(tap.gen_parsed)
+
+        # Aggregate logits
+        if tap_outputs:
+            all_logit_keys: set[str] = set()
+            for tap in tap_outputs:
+                all_logit_keys.update(tap.logits.keys())
+
+            for key in all_logit_keys:
+                if all(key in t.logits for t in tap_outputs):
+                    aggregated.logits[key] = torch.cat([t.logits[key] for t in tap_outputs], dim=0)
+
+        # Aggregate choice_logits
+        if tap_outputs:
+            all_choice_logit_keys: set[str] = set()
+            for tap in tap_outputs:
+                all_choice_logit_keys.update(tap.choice_logits.keys())
+
+            for key in all_choice_logit_keys:
+                if all(key in t.choice_logits for t in tap_outputs):
+                    aggregated.choice_logits[key] = torch.cat([t.choice_logits[key] for t in tap_outputs], dim=0)
+
+        # Aggregate choice_token_ids
+        if any(t.choice_token_ids for t in tap_outputs):
+            aggregated.choice_token_ids = []
+            for tap in tap_outputs:
+                if tap.choice_token_ids:
+                    aggregated.choice_token_ids.extend(tap.choice_token_ids)
 
         return aggregated
 

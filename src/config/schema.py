@@ -62,6 +62,14 @@ class OutputConfig(BaseModel):
     save_plots: bool = Field(default=True, description="Save plots")
 
 
+class LogitAnalysisConfig(BaseModel):
+    """Logit analysis configuration."""
+
+    extract_logits: bool = Field(default=False, description="Extract logits from all layers")
+    save_full_logits: bool = Field(default=False, description="Save full vocab logits (can be large)")
+    save_choice_logits: bool = Field(default=True, description="Save choice logits only")
+
+
 class Config(BaseModel):
     """Main configuration."""
 
@@ -70,6 +78,7 @@ class Config(BaseModel):
     experiment: ExperimentConfig
     probe: ProbeConfig
     output: OutputConfig
+    logit_analysis: LogitAnalysisConfig = Field(default_factory=LogitAnalysisConfig, description="Logit analysis settings")
 
     # Experiment settings
     batch_size: int = Field(default=8, description="Batch size")

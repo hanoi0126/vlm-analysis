@@ -10,8 +10,8 @@
 # gemma: [google/gemma-3-4b-it]
 # ----------------------------------------------------------------------------
 model:
-  name: intern_vl
-  model_id: OpenGVLab/InternVL3_5-4B
+  name: qwen
+  model_id: Qwen/Qwen2.5-VL-3B-Instruct
   use_int8: false
   use_fast_processor: true
   llm_layers: all  # or specify list like [0, 6, 12, 18, 24, 30, 35]
@@ -69,6 +69,14 @@ output:
   results_root: /work/gb20/b20070/vlm-analysis/results
   save_features: true
   save_plots: true
+
+# ----------------------------------------------------------------------------
+# Logit Analysis Configuration
+# ----------------------------------------------------------------------------
+logit_analysis:
+  extract_logits: true  # Set to true to extract logits from all layers
+  save_full_logits: false  # Save full vocab logits (can be very large)
+  save_choice_logits: true  # Save choice logits only (recommended)
 
 # ----------------------------------------------------------------------------
 # Experiment Settings

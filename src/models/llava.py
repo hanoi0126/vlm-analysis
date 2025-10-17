@@ -213,6 +213,8 @@ class LlavaFeatureExtractor(BaseFeatureExtractor):
         max_new_tokens: int = 32,
         do_sample: bool = False,
         generation_kwargs: dict | None = None,
+        extract_logits: bool = False,
+        options: list[list[str]] | None = None,
     ) -> TapOutput:
         """Extract features with or without images."""
         if texts is None:
@@ -313,7 +315,80 @@ class LlavaFeatureExtractor(BaseFeatureExtractor):
             self._in_gen = False
             self._gen_sum, self._gen_cnt = {}, {}
 
+        # Extract logits if requested
+        if extract_logits and options is not None:
+            self._extract_choice_logits(batch, options)
+
         return self._tap
+
+    def _extract_choice_logits(self, batch: dict, options: list[list[str]]) -> None:  # noqa: ARG002
+        """
+        Extract logits for choice tokens from all layers.
+
+        Args:
+            batch: Input batch dictionary (unused, kept for consistency)
+            options: List of option lists for each sample (B, num_choices)
+        """
+        tok = self.processor.tokenizer
+        lm_head = self.model.get_output_embeddings()
+
+        if lm_head is None:
+            return
+
+        # Tokenize all options to get first token IDs
+        max_choices = max(len(opts) for opts in options)
+        choice_token_ids = []
+
+        for sample_options in options:
+            sample_tokens = []
+            for opt in sample_options:
+                # Tokenize without special tokens and get first token
+                token_ids = tok.encode(opt, add_special_tokens=False)
+                if len(token_ids) > 0:
+                    sample_tokens.append(token_ids[0])
+                else:
+                    # Fallback: use unknown token
+                    sample_tokens.append(tok.unk_token_id if tok.unk_token_id is not None else 0)
+            choice_token_ids.append(sample_tokens)
+
+        self._tap.choice_token_ids = choice_token_ids
+
+        # Extract logits from each layer
+        for layer_name, hidden_states in self._tap.layers.items():
+            if hidden_states is None or hidden_states.ndim != 2:
+                continue
+
+            # Apply lm_head: (B, hidden_size) -> (B, vocab_size)
+            with torch.no_grad():
+                hidden_states_gpu = hidden_states.to(self.device)
+                vocab_logits = lm_head(hidden_states_gpu)  # (B, vocab_size)
+
+                # Store full logits (optional, can be large)
+                self._tap.logits[layer_name] = vocab_logits.detach().cpu()
+
+                # Extract choice logits
+                choice_logits_batch = []
+                for i, sample_token_ids in enumerate(choice_token_ids):
+                    sample_logits = vocab_logits[i, sample_token_ids]  # (num_choices,)
+                    choice_logits_batch.append(sample_logits)
+
+                # Pad to max_choices and stack
+                choice_logits_padded = []
+                for cl in choice_logits_batch:
+                    if len(cl) < max_choices:
+                        # Pad with very negative values
+                        padding = torch.full(
+                            (max_choices - len(cl),),
+                            float("-inf"),
+                            dtype=cl.dtype,
+                            device=cl.device,
+                        )
+                        padded_cl = torch.cat([cl, padding])
+                    else:
+                        padded_cl = cl
+                    choice_logits_padded.append(padded_cl)
+
+                self._tap.choice_logits[layer_name] = torch.stack(choice_logits_padded).detach().cpu()
 
     def get_tap_points(self) -> list[str]:
         """
