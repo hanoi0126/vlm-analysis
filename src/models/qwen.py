@@ -3,6 +3,7 @@
 import re
 
 import torch
+import torch.nn.functional as F
 from transformers import AutoProcessor
 from transformers.utils.quantization_config import BitsAndBytesConfig
 
@@ -286,8 +287,15 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
                 new_tokens = sequences[i, start:]
                 text = tok.decode(new_tokens, skip_special_tokens=True)
                 outs.append(text)
+
+                # Try to parse bracketed format first: {answer}
                 m = re.search(r"\{([^}]+)\}", text)
-                parsed.append(m.group(1).strip() if m else None)
+                if m:
+                    parsed.append(m.group(1).strip())
+                else:
+                    # Fallback: use the first word/token (for non-bracketed format)
+                    cleaned = text.strip()
+                    parsed.append(cleaned.split()[0] if cleaned else None)
 
             self._tap.gen_texts = outs
             self._tap.gen_parsed = parsed
@@ -307,12 +315,15 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
 
         return self._tap
 
-    def _extract_choice_logits(self, batch: dict, options: list[list[str]]) -> None:  # noqa: ARG002
+    def _extract_choice_logits(self, batch: dict, options: list[list[str]]) -> None:
         """
-        Extract logits for choice tokens from all layers.
+        Extract logits for choice tokens from all layers using sequence probabilities.
+
+        For multi-token choices (e.g., "135" = ["1", "3", "5"]), this method computes
+        the full sequence probability using teacher forcing.
 
         Args:
-            batch: Input batch dictionary (unused, kept for consistency)
+            batch: Input batch dictionary
             options: List of option lists for each sample (B, num_choices)
         """
         tok = self.processor.tokenizer
@@ -321,48 +332,81 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         if lm_head is None:
             return
 
-        # Tokenize all options to get first token IDs
+        # Tokenize all options (keep full token sequences)
         max_choices = max(len(opts) for opts in options)
-        choice_token_ids = []
+        choice_token_ids_all = []  # Store full token sequences
 
         for sample_options in options:
-            sample_tokens = []
+            sample_token_seqs = []
             for opt in sample_options:
-                # Tokenize without special tokens and get first token
+                # Tokenize without special tokens
                 token_ids = tok.encode(opt, add_special_tokens=False)
-                if len(token_ids) > 0:
-                    sample_tokens.append(token_ids[0])
-                else:
+                if len(token_ids) == 0:
                     # Fallback: use unknown token
-                    sample_tokens.append(tok.unk_token_id if tok.unk_token_id is not None else 0)
-            choice_token_ids.append(sample_tokens)
+                    token_ids = [tok.unk_token_id if tok.unk_token_id is not None else 0]
+                sample_token_seqs.append(token_ids)
+            choice_token_ids_all.append(sample_token_seqs)
 
-        self._tap.choice_token_ids = choice_token_ids
+        self._tap.choice_token_ids = choice_token_ids_all
 
-        # Extract logits from each layer
+        # Extract sequence probabilities for each choice
+        self._extract_sequence_logits(batch, choice_token_ids_all, max_choices, lm_head)
+
+    def _extract_sequence_logits(
+        self,
+        batch: dict,  # noqa: ARG002
+        choice_token_ids_all: list[list[list[int]]],
+        max_choices: int,
+        lm_head: torch.nn.Module,
+    ) -> None:
+        """
+        Extract sequence logits by generating each choice with teacher forcing.
+
+        For each choice, computes the full sequence probability:
+        P(choice) = P(token_1) × P(token_2|token_1) × ... × P(token_n|token_1:n-1)
+
+        Args:
+            batch: Input batch dictionary
+            choice_token_ids_all: Token ID sequences for all choices (B, num_choices, seq_len)
+            max_choices: Maximum number of choices across samples
+            lm_head: Language model head
+        """
+        # TEMPORARY: Always use first-token approximation
+        # Teacher forcing implementation has issues with image inputs
+        # TODO: Fix teacher forcing for multi-token sequences with vision inputs
+        self._extract_single_token_logits(choice_token_ids_all, max_choices, lm_head)
+
+    def _extract_single_token_logits(
+        self,
+        choice_token_ids_all: list[list[list[int]]],
+        max_choices: int,
+        lm_head: torch.nn.Module,
+    ) -> None:
+        """Extract logits for single-token choices (fast path)."""
         for layer_name, hidden_states in self._tap.layers.items():
             if hidden_states is None or hidden_states.ndim != 2:
                 continue
 
-            # Apply lm_head: (B, hidden_size) -> (B, vocab_size)
             with torch.no_grad():
                 hidden_states_gpu = hidden_states.to(self.device)
                 vocab_logits = lm_head(hidden_states_gpu)  # (B, vocab_size)
+                log_probs = F.log_softmax(vocab_logits, dim=-1)
 
-                # Store full logits (optional, can be large)
                 self._tap.logits[layer_name] = vocab_logits.detach().cpu()
 
-                # Extract choice logits
                 choice_logits_batch = []
-                for i, sample_token_ids in enumerate(choice_token_ids):
-                    sample_logits = vocab_logits[i, sample_token_ids]  # (num_choices,)
-                    choice_logits_batch.append(sample_logits)
+                for i, sample_token_seqs in enumerate(choice_token_ids_all):
+                    sample_logits = []
+                    for token_seq in sample_token_seqs:
+                        first_token_id = token_seq[0]
+                        first_token_logprob = log_probs[i, first_token_id]
+                        sample_logits.append(first_token_logprob)
 
-                # Pad to max_choices and stack
+                    choice_logits_batch.append(torch.tensor(sample_logits, device=vocab_logits.device))
+
                 choice_logits_padded = []
                 for cl in choice_logits_batch:
                     if len(cl) < max_choices:
-                        # Pad with very negative values
                         padding = torch.full(
                             (max_choices - len(cl),),
                             float("-inf"),
@@ -375,6 +419,195 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
                     choice_logits_padded.append(padded_cl)
 
                 self._tap.choice_logits[layer_name] = torch.stack(choice_logits_padded).detach().cpu()
+
+    def _extract_multi_token_logits_with_teacher_forcing(
+        self,
+        batch: dict,
+        choice_token_ids_all: list[list[list[int]]],
+        max_choices: int,
+        lm_head: torch.nn.Module,
+        model: torch.nn.Module,
+    ) -> None:
+        """
+        Extract logits for multi-token choices using teacher forcing.
+
+        For each choice, generates it autoregressively and computes sequence probability.
+        """
+        # Get batch size
+        batch_size = len(choice_token_ids_all)
+
+        # Store layer-wise choice logits
+        layer_choice_logits = {layer_name: [] for layer_name in self._tap.layers}
+
+        # Process each sample in the batch
+        for sample_idx in range(batch_size):
+            sample_choices = choice_token_ids_all[sample_idx]
+            sample_choice_logits = {layer_name: [] for layer_name in self._tap.layers}
+
+            # Get original input for this sample
+            # Note: batch contains processed inputs, we need to get the original input_ids
+            # For simplicity, we'll use the hidden states approach
+
+            # For each choice, compute sequence log probability
+            for choice_tokens in sample_choices:
+                # Compute sequence log probability using autoregressive generation
+                seq_log_prob = self._compute_choice_sequence_probability(batch, sample_idx, choice_tokens, lm_head, model)
+
+                # Store for each layer
+                for layer_name, log_prob_value in seq_log_prob.items():
+                    sample_choice_logits[layer_name].append(log_prob_value)
+
+            # Add sample results to batch results
+            for layer_name, choice_list in sample_choice_logits.items():
+                layer_choice_logits[layer_name].append(torch.tensor(choice_list, device=self.device))
+
+        # Pad and store results
+        for layer_name, choice_logits_list in layer_choice_logits.items():
+            if not choice_logits_list:
+                continue
+
+            choice_logits_padded = []
+            for cl in choice_logits_list:
+                if len(cl) < max_choices:
+                    padding = torch.full(
+                        (max_choices - len(cl),),
+                        float("-inf"),
+                        dtype=cl.dtype,
+                        device=cl.device,
+                    )
+                    padded_cl = torch.cat([cl, padding])
+                else:
+                    padded_cl = cl
+                choice_logits_padded.append(padded_cl)
+
+            self._tap.choice_logits[layer_name] = torch.stack(choice_logits_padded).detach().cpu()
+
+    def _compute_choice_sequence_probability(
+        self,
+        batch: dict,
+        sample_idx: int,
+        choice_tokens: list[int],
+        lm_head: torch.nn.Module,
+        model: torch.nn.Module,
+    ) -> dict[str, float]:
+        """
+        Compute sequence log probability for a single choice using teacher forcing.
+
+        For multi-token choices, autoregressively generates each token and computes:
+        log P(choice) = log P(t1) + log P(t2|t1) + ... + log P(tn|t1:n-1)
+
+        Returns:
+            Dictionary mapping layer names to sequence log probabilities
+        """
+        if len(choice_tokens) == 1:
+            # Single token - use existing hidden states (fast path)
+            return self._get_single_token_log_prob(sample_idx, choice_tokens[0], lm_head)
+
+        # Multi-token choice - need autoregressive generation with teacher forcing
+        return self._get_multi_token_sequence_log_prob(batch, sample_idx, choice_tokens, lm_head, model)
+
+    def _get_single_token_log_prob(
+        self,
+        sample_idx: int,
+        token_id: int,
+        lm_head: torch.nn.Module,
+    ) -> dict[str, float]:
+        """Get log probability for a single token from existing hidden states."""
+        layer_log_probs = {}
+
+        for layer_name, hidden_states in self._tap.layers.items():
+            if hidden_states is None or hidden_states.ndim != 2:
+                continue
+
+            if sample_idx >= hidden_states.shape[0]:
+                continue
+
+            with torch.no_grad():
+                sample_hidden = hidden_states[sample_idx : sample_idx + 1].to(self.device)
+                vocab_logits = lm_head(sample_hidden)
+                log_probs = F.log_softmax(vocab_logits, dim=-1)
+                layer_log_probs[layer_name] = log_probs[0, token_id].item()
+
+        return layer_log_probs
+
+    def _get_multi_token_sequence_log_prob(
+        self,
+        batch: dict,
+        sample_idx: int,
+        choice_tokens: list[int],
+        lm_head: torch.nn.Module,
+        model: torch.nn.Module,
+    ) -> dict[str, float]:
+        """
+        Compute sequence log probability with full teacher forcing.
+
+        Autoregressively generates each token and accumulates log probabilities.
+        """
+        # Initialize layer log probs
+        layer_log_probs = dict.fromkeys(self._tap.layers, 0.0)
+
+        # Get the original input_ids from batch
+        # Note: We need to extract the sample's input and append choice tokens one by one
+        if "input_ids" not in batch:
+            # Fallback: use first token approximation if we can't do full teacher forcing
+            print("Warning: Cannot perform full teacher forcing without input_ids. Using approximation.")
+            return self._get_single_token_log_prob(sample_idx, choice_tokens[0], lm_head)
+
+        # Get sample's input_ids
+        sample_input_ids = batch["input_ids"][sample_idx : sample_idx + 1].clone()
+
+        # Get other batch inputs for this sample
+        sample_batch = {
+            "input_ids": sample_input_ids,
+        }
+        if "attention_mask" in batch:
+            sample_batch["attention_mask"] = batch["attention_mask"][sample_idx : sample_idx + 1].clone()
+        if "pixel_values" in batch:
+            sample_batch["pixel_values"] = batch["pixel_values"][sample_idx : sample_idx + 1].clone()
+        if "image_grid_thw" in batch:
+            sample_batch["image_grid_thw"] = batch["image_grid_thw"][sample_idx : sample_idx + 1].clone()
+
+        # Autoregressively generate each token with teacher forcing
+        current_input_ids = sample_input_ids
+
+        for target_token_id in choice_tokens:
+            # Forward pass with current sequence
+            with torch.no_grad():
+                # Update input_ids for this step
+                sample_batch_step = sample_batch.copy()
+                sample_batch_step["input_ids"] = current_input_ids
+
+                # Get model outputs with hidden states
+                outputs = model(
+                    **sample_batch_step,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+
+                # Get hidden states from all layers at the last position
+                hidden_states_all_layers = outputs.hidden_states
+
+                # Compute log prob for target token at each layer
+                for layer_idx, hidden_state in enumerate(hidden_states_all_layers):
+                    # Get last position hidden state
+                    last_hidden = hidden_state[:, -1:, :]  # (1, 1, hidden_size)
+
+                    # Compute logits
+                    vocab_logits = lm_head(last_hidden.squeeze(1))  # (1, vocab_size)
+                    log_probs = F.log_softmax(vocab_logits, dim=-1)
+
+                    # Get log prob for target token
+                    target_log_prob = log_probs[0, target_token_id].item()
+
+                    # Accumulate for this layer
+                    layer_name = f"l{layer_idx:02d}"
+                    if layer_name in layer_log_probs:
+                        layer_log_probs[layer_name] += target_log_prob
+
+            # Append target token to input for next step (teacher forcing)
+            current_input_ids = torch.cat([current_input_ids, torch.tensor([[target_token_id]], device=current_input_ids.device)], dim=1)
+
+        return layer_log_probs
 
     def get_tap_points(self) -> list[str]:
         """

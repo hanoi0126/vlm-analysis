@@ -309,8 +309,15 @@ class GemmaFeatureExtractor(BaseFeatureExtractor):
                 new_tokens = sequences[i, start:]
                 text = tok.decode(new_tokens, skip_special_tokens=True)
                 outs.append(text)
+
+                # Try to parse bracketed format first: {answer}
                 m = re.search(r"\{([^}]+)\}", text)
-                parsed.append(m.group(1).strip() if m else None)
+                if m:
+                    parsed.append(m.group(1).strip())
+                else:
+                    # Fallback: use the first word/token (for non-bracketed format)
+                    cleaned = text.strip()
+                    parsed.append(cleaned.split()[0] if cleaned else None)
 
             self._tap.gen_texts = outs
             self._tap.gen_parsed = parsed
