@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from src.ablation import AblationEvaluator
+from .evaluator import AblationEvaluator
 
 
 def run_layer_ablation(
@@ -36,7 +36,7 @@ def run_layer_ablation(
         processor: Model processor
         config: Experiment configuration
         tasks: List of tasks to evaluate (default: use config.experiment.tasks)
-        output_dir: Output directory (default: config.output.results_root/ablation/phase1)
+        output_dir: Output directory (default: config.output.results_root/ablation/layer)
         device: Device to run on
         num_layers: Number of layers in the model
         show_progress: Show progress bars
@@ -49,7 +49,7 @@ def run_layer_ablation(
         tasks = config.experiment.tasks
 
     if output_dir is None:
-        output_dir = Path(config.output.results_root) / "ablation" / "phase1"
+        output_dir = Path(config.output.results_root) / "ablation" / "layer"
     else:
         output_dir = Path(output_dir)
 

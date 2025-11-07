@@ -59,10 +59,10 @@ def main(cfg: DictConfig) -> None:
     ablation_cfg = cfg.get("ablation", {})
     phases_cfg = ablation_cfg.get("phases", {})
 
-    # Determine which phases to run
-    run_phase1 = phases_cfg.get("layer_screening", True)
-    run_phase2 = phases_cfg.get("head_analysis", True)
-    run_phase3 = phases_cfg.get("combination", True)
+    # Determine which experiments to run
+    run_layer_ablation_exp = phases_cfg.get("layer_screening", True)
+    run_head_ablation_exp = phases_cfg.get("head_analysis", True)
+    run_combination_exp = phases_cfg.get("combination", True)
 
     # Get target layers if specified
     target_layers = None
@@ -79,11 +79,11 @@ def main(cfg: DictConfig) -> None:
     print(f"Tasks: {config.experiment.tasks}")
     print(f"Batch size: {config.batch_size}")
     print(f"Output: {config.output.results_root}")
-    print(f"Phases: Phase1={run_phase1}, Phase2={run_phase2}, Phase3={run_phase3}")
+    print(f"Experiments: Layer={run_layer_ablation_exp}, Head={run_head_ablation_exp}, Combination={run_combination_exp}")
     if target_layers:
         print(f"Target layers: {target_layers}")
     else:
-        print("Target layers: Not specified (will use Phase 1 results or default)")
+        print("Target layers: Not specified (will use layer ablation results or default)")
 
     # Load model
     print("\n" + "=" * 80)
@@ -110,18 +110,18 @@ def main(cfg: DictConfig) -> None:
     print(f"  Number of attention heads (Q): {num_heads}")
 
     # Results storage
-    phase1_results = None
-    phase2_results = None
-    phase3_results = None
+    layer_results = None
+    head_results = None
+    combination_results = None
     critical_layers = target_layers
 
-    # Phase 1: Layer-level ablation
-    if run_phase1:
+    # Layer-level ablation
+    if run_layer_ablation_exp:
         print("\n" + "=" * 80)
-        print("PHASE 1: Layer-Level Ablation")
+        print("LAYER ABLATION: Identifying Critical Layers")
         print("=" * 80)
 
-        phase1_results = run_layer_ablation(
+        layer_results = run_layer_ablation(
             model=model,
             processor=processor,
             config=config,
@@ -134,27 +134,27 @@ def main(cfg: DictConfig) -> None:
 
         # Load critical layers if not specified
         if critical_layers is None:
-            phase1_output = Path(config.output.results_root) / "ablation" / "phase1"
-            critical_layers_path = phase1_output / "critical_layers.json"
+            layer_output = Path(config.output.results_root) / "ablation" / "layer"
+            critical_layers_path = layer_output / "critical_layers.json"
 
             if critical_layers_path.exists():
                 with open(critical_layers_path) as f:
                     critical_info = json.load(f)
                     critical_layers = critical_info["critical_layers"]
 
-        # Generate Phase 1 visualizations
-        if config.output.save_plots and phase1_results is not None:
-            print("\nGenerating Phase 1 visualizations...")
-            phase1_output = Path(config.output.results_root) / "ablation" / "phase1"
+        # Generate layer ablation visualizations
+        if config.output.save_plots and layer_results is not None:
+            print("\nGenerating layer ablation visualizations...")
+            layer_output = Path(config.output.results_root) / "ablation" / "layer"
             plot_layer_importance(
-                phase1_results,
-                output_path=phase1_output / "layer_importance.pdf",
+                layer_results,
+                output_path=layer_output / "layer_importance.pdf",
             )
 
-    # Phase 2: Head-level ablation (PRIORITY)
-    if run_phase2:
+    # Head-level ablation
+    if run_head_ablation_exp:
         print("\n" + "=" * 80)
-        print("PHASE 2: Head-Level Ablation (PRIORITY)")
+        print("HEAD ABLATION: Analyzing Individual Attention Heads")
         print("=" * 80)
 
         if critical_layers is None:
@@ -164,7 +164,7 @@ def main(cfg: DictConfig) -> None:
         # Get model short name for organizing results
         model_short_name = get_model_short_name(config.model.model_id)
 
-        phase2_results = run_head_ablation(
+        head_results = run_head_ablation(
             model=model,
             processor=processor,
             config=config,
@@ -179,40 +179,44 @@ def main(cfg: DictConfig) -> None:
             model_id=model_short_name,
         )
 
-        # Generate Phase 2 visualizations
-        if config.output.save_plots and phase2_results is not None:
-            print("\nGenerating Phase 2 visualizations...")
-            phase2_output = Path(config.output.results_root) / "ablation" / "phase2" / model_short_name / "plots"
+        # Generate head ablation visualizations
+        if config.output.save_plots and head_results is not None:
+            print("\nGenerating head ablation visualizations...")
+            head_output = Path(config.output.results_root) / "ablation" / "head" / model_short_name / "plots"
             generate_all_phase2_visualizations(
-                phase2_results,
-                output_dir=phase2_output,
+                head_results,
+                output_dir=head_output,
             )
 
-    # Phase 3: Combination analysis
-    if run_phase3:
+    # Head combination analysis
+    if run_combination_exp:
         print("\n" + "=" * 80)
-        print("PHASE 3: Multi-Head Combination Analysis")
+        print("HEAD COMBINATION: Analyzing Multi-Head Interactions")
         print("=" * 80)
 
-        phase3_results = run_combination_analysis(
+        # Get model short name for organizing results
+        model_short_name = get_model_short_name(config.model.model_id)
+
+        combination_results = run_combination_analysis(
             model=model,
             processor=processor,
             config=config,
-            alignment_heads=None,  # Load from Phase 2
+            alignment_heads=None,  # Load from head ablation
             tasks=config.experiment.tasks,
             output_dir=None,
             device=config.device,
             max_combinations=3,
             show_progress=True,
+            model_id=model_short_name,
         )
 
-        # Generate Phase 3 visualizations
-        if config.output.save_plots and phase3_results is not None:
-            print("\nGenerating Phase 3 visualizations...")
-            phase3_output = Path(config.output.results_root) / "ablation" / "phase3"
+        # Generate combination visualizations
+        if config.output.save_plots and combination_results is not None:
+            print("\nGenerating combination visualizations...")
+            combination_output = Path(config.output.results_root) / "ablation" / "head_combination"
             plot_combination_effects(
-                phase3_results,
-                output_path=phase3_output / "combination_effects.pdf",
+                combination_results,
+                output_path=combination_output / "combination_effects.pdf",
             )
 
     # Final summary
@@ -223,31 +227,31 @@ def main(cfg: DictConfig) -> None:
     results_root = Path(config.output.results_root) / "ablation"
     print(f"\nResults saved to: {results_root}")
 
-    if phase1_results is not None:
-        print(f"  - Phase 1: {results_root / 'phase1'}")
-    if phase2_results is not None:
+    if layer_results is not None:
+        print(f"  - Layer ablation: {results_root / 'layer'}")
+    if head_results is not None:
         model_short_name = get_model_short_name(config.model.model_id)
-        phase2_dir = results_root / "phase2" / model_short_name
-        print(f"  - Phase 2: {phase2_dir}")
+        head_dir = results_root / "head" / model_short_name
+        print(f"  - Head ablation: {head_dir}")
         print("    → summary/: Aggregated results and statistics")
         print("    → by_layer/: Results split by layer")
         print("    → by_task/: Results split by task")
         print("    → plots/: Visualization PDFs")
-    if phase3_results is not None:
-        print(f"  - Phase 3: {results_root / 'phase3'}")
+    if combination_results is not None:
+        print(f"  - Head combination: {results_root / 'head_combination'}")
 
     if config.output.save_plots:
         print("\nKey files:")
-        if phase1_results is not None:
-            print(f"  - Layer importance: {results_root / 'phase1' / 'layer_importance.pdf'}")
-        if phase2_results is not None:
+        if layer_results is not None:
+            print(f"  - Layer importance: {results_root / 'layer' / 'layer_importance.pdf'}")
+        if head_results is not None:
             model_short_name = get_model_short_name(config.model.model_id)
-            phase2_dir = results_root / "phase2" / model_short_name
-            print(f"  - Head heatmaps: {phase2_dir / 'plots' / 'head_importance_*.pdf'}")
-            print(f"  - Summary CSV: {phase2_dir / 'summary' / 'head_ablation_detailed.csv'}")
-            print(f"  - Alignment heads: {phase2_dir / 'summary' / 'alignment_heads_summary.json'}")
-        if phase3_results is not None:
-            print(f"  - Combination effects: {results_root / 'phase3' / 'combination_effects.pdf'}")
+            head_dir = results_root / "head" / model_short_name
+            print(f"  - Head heatmaps: {head_dir / 'plots' / 'head_importance_*.pdf'}")
+            print(f"  - Summary CSV: {head_dir / 'summary' / 'head_ablation_detailed.csv'}")
+            print(f"  - Alignment heads: {head_dir / 'summary' / 'alignment_heads_summary.json'}")
+        if combination_results is not None:
+            print(f"  - Combination effects: {results_root / 'head_combination' / 'combination_effects.pdf'}")
 
     print("\n" + "=" * 80)
 

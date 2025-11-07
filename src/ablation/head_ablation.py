@@ -13,8 +13,10 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from src.ablation import AblationEvaluator, multiple_comparison_correction
 from src.utils.paths import get_model_short_name
+
+from .evaluator import AblationEvaluator
+from .statistics import multiple_comparison_correction
 
 
 def run_head_ablation(
@@ -41,9 +43,9 @@ def run_head_ablation(
         model: VLM model
         processor: Model processor
         config: Experiment configuration
-        target_layers: List of layers to analyze (default: load from Phase 1)
+        target_layers: List of layers to analyze (default: load from layer ablation results)
         tasks: List of tasks to evaluate (default: use config.experiment.tasks)
-        output_dir: Output directory (default: config.output.results_root/ablation/phase2/{model_id})
+        output_dir: Output directory (default: config.output.results_root/ablation/head/{model_id})
         device: Device to run on
         num_heads: Number of attention heads per layer
         show_progress: Show progress bars
@@ -63,7 +65,7 @@ def run_head_ablation(
         model_id = get_model_short_name(config.model.model_id)  # e.g., qwen25_3b
 
     if output_dir is None:
-        output_dir = Path(config.output.results_root) / "ablation" / "phase2" / model_id
+        output_dir = Path(config.output.results_root) / "ablation" / "head" / model_id
     else:
         output_dir = Path(output_dir)
 
@@ -85,14 +87,14 @@ def run_head_ablation(
 
     # Load target layers if not provided
     if target_layers is None:
-        phase1_dir = Path(config.output.results_root) / "ablation" / "phase1"
-        critical_layers_path = phase1_dir / "critical_layers.json"
+        layer_dir = Path(config.output.results_root) / "ablation" / "layer"
+        critical_layers_path = layer_dir / "critical_layers.json"
 
         if critical_layers_path.exists():
             with open(critical_layers_path) as f:
                 critical_info = json.load(f)
                 target_layers = critical_info["critical_layers"]
-            print(f"Loaded critical layers from Phase 1: {target_layers}")
+            print(f"Loaded critical layers from layer ablation: {target_layers}")
         else:
             # Default: analyze middle-to-late layers
             target_layers = [14, 15, 16, 17]
@@ -258,7 +260,7 @@ def run_head_ablation(
     print(f"Saved task specificity matrix to: {matrix_path}")
 
     # Print summary
-    print_phase2_summary(alignment_heads)
+    print_head_ablation_summary(alignment_heads)
 
     return df
 
@@ -478,10 +480,10 @@ def create_task_specificity_matrix(
     return matrix_df
 
 
-def print_phase2_summary(alignment_heads: dict[str, Any]) -> None:
-    """Print a summary of Phase 2 results."""
+def print_head_ablation_summary(alignment_heads: dict[str, Any]) -> None:
+    """Print a summary of head ablation results."""
     print("\n" + "=" * 80)
-    print("Phase 2 Summary: Alignment Heads")
+    print("Head Ablation Summary: Alignment Heads")
     print("=" * 80)
 
     summary = alignment_heads["summary"]

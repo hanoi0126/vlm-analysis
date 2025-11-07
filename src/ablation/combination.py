@@ -14,8 +14,11 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from src.ablation import AblationEvaluator, AblationHookManager
 from src.data import HuggingFaceDataset
+from src.utils.paths import get_model_short_name
+
+from .evaluator import AblationEvaluator
+from .hooks import AblationHookManager
 
 
 def run_combination_analysis(
@@ -28,6 +31,7 @@ def run_combination_analysis(
     device: str = "cuda",
     max_combinations: int = 3,
     show_progress: bool = True,
+    model_id: str | None = None,
 ) -> pd.DataFrame:
     """
     Run multi-head combination ablation analysis.
@@ -38,12 +42,13 @@ def run_combination_analysis(
         model: VLM model
         processor: Model processor
         config: Experiment configuration
-        alignment_heads: List of (layer_idx, head_idx) tuples (load from Phase 2 if None)
+        alignment_heads: List of (layer_idx, head_idx) tuples (load from head ablation if None)
         tasks: List of tasks to evaluate
         output_dir: Output directory
         device: Device to run on
         max_combinations: Maximum number of heads to ablate simultaneously
         show_progress: Show progress bars
+        model_id: Model identifier for organizing results (default: from config)
 
     Returns:
         DataFrame with combination analysis results
@@ -52,8 +57,12 @@ def run_combination_analysis(
     if tasks is None:
         tasks = config.experiment.tasks
 
+    # Get model short name for directory structure
+    if model_id is None:
+        model_id = get_model_short_name(config.model.model_id)
+
     if output_dir is None:
-        output_dir = Path(config.output.results_root) / "ablation" / "phase3"
+        output_dir = Path(config.output.results_root) / "ablation" / "head_combination"
     else:
         output_dir = Path(output_dir)
 
@@ -61,8 +70,8 @@ def run_combination_analysis(
 
     # Load alignment heads if not provided
     if alignment_heads is None:
-        phase2_dir = Path(config.output.results_root) / "ablation" / "phase2"
-        alignment_path = phase2_dir / "alignment_heads_summary.json"
+        head_dir = Path(config.output.results_root) / "ablation" / "head" / model_id / "summary"
+        alignment_path = head_dir / "alignment_heads_summary.json"
 
         if alignment_path.exists():
             with open(alignment_path) as f:
@@ -71,9 +80,9 @@ def run_combination_analysis(
                     (h["layer"], h["head"])
                     for h in alignment_info["alignment_heads"][:15]  # Top 15 heads
                 ]
-            print(f"Loaded {len(alignment_heads)} alignment heads from Phase 2")
+            print(f"Loaded {len(alignment_heads)} alignment heads from head ablation")
         else:
-            msg = "No alignment heads found. Run Phase 2 first."
+            msg = "No alignment heads found. Run head ablation first."
             raise ValueError(msg)
 
     # Initialize evaluator
@@ -108,11 +117,11 @@ def run_combination_analysis(
         baseline_results[task] = baseline
 
     # Load single-head ablation results for comparison
-    phase2_df = None
-    phase2_path = Path(config.output.results_root) / "ablation" / "phase2" / "head_ablation_detailed.csv"
-    if phase2_path.exists():
-        phase2_df = pd.read_csv(phase2_path)
-        print("Loaded Phase 2 results for comparison")
+    head_df = None
+    head_path = Path(config.output.results_root) / "ablation" / "head" / model_id / "summary" / "head_ablation_detailed.csv"
+    if head_path.exists():
+        head_df = pd.read_csv(head_path)
+        print("Loaded single-head ablation results for comparison")
 
     # Run combination experiments
     print("\n" + "=" * 80)
@@ -152,7 +161,7 @@ def run_combination_analysis(
                 )
 
                 # Get expected effect from individual ablations
-                expected_effect = compute_expected_effect(combo, task, phase2_df, baseline_results[task]["accuracy"])
+                expected_effect = compute_expected_effect(combo, task, head_df, baseline_results[task]["accuracy"])
 
                 # Record results
                 result = {
@@ -188,7 +197,7 @@ def run_combination_analysis(
     print(f"Saved interaction analysis to: {analysis_path}")
 
     # Print summary
-    print_phase3_summary(analysis)
+    print_combination_summary(analysis)
 
     return df
 
@@ -253,7 +262,7 @@ def evaluate_with_multi_head_ablation(
 def compute_expected_effect(
     combo: tuple[tuple[int, int], ...],
     task: str,
-    phase2_df: pd.DataFrame | None,
+    head_df: pd.DataFrame | None,
     baseline_acc: float,
 ) -> float:
     """
@@ -265,18 +274,18 @@ def compute_expected_effect(
     Args:
         combo: Tuple of (layer_idx, head_idx) tuples
         task: Task name
-        phase2_df: Phase 2 results DataFrame
+        head_df: Single-head ablation results DataFrame
         baseline_acc: Baseline accuracy
 
     Returns:
         Expected delta accuracy
     """
-    if phase2_df is None:
+    if head_df is None:
         return np.nan
 
     individual_deltas = []
     for layer_idx, head_idx in combo:
-        subset = phase2_df[(phase2_df["layer_idx"] == layer_idx) & (phase2_df["head_idx"] == head_idx) & (phase2_df["task"] == task)]
+        subset = head_df[(head_df["layer_idx"] == layer_idx) & (head_df["head_idx"] == head_idx) & (head_df["task"] == task)]
 
         if len(subset) > 0:
             individual_deltas.append(subset.iloc[0]["delta_acc"])
@@ -375,10 +384,10 @@ def analyze_head_interactions(
     }
 
 
-def print_phase3_summary(analysis: dict[str, Any]) -> None:
-    """Print a summary of Phase 3 results."""
+def print_combination_summary(analysis: dict[str, Any]) -> None:
+    """Print a summary of head combination analysis results."""
     print("\n" + "=" * 80)
-    print("Phase 3 Summary: Head Interactions")
+    print("Head Combination Summary: Head Interactions")
     print("=" * 80)
 
     summary = analysis["summary"]
