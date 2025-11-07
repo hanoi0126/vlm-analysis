@@ -5,6 +5,36 @@ from typing import Any
 import matplotlib.pyplot as plt
 
 # ============================================================================
+# General Plot Style
+# ============================================================================
+
+
+def apply_plot_style() -> None:
+    """
+    Apply general plot style for consistency across all visualizations.
+
+    Sets matplotlib style parameters for clean, publication-ready plots.
+    """
+    plt.style.use("seaborn-v0_8-darkgrid")
+    plt.rcParams.update(
+        {
+            "font.size": 11,
+            "axes.labelsize": 12,
+            "axes.titlesize": 14,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "legend.fontsize": 10,
+            "figure.titlesize": 16,
+            "figure.dpi": 100,
+            "savefig.dpi": 300,
+            "savefig.bbox": "tight",
+            "axes.grid": True,
+            "grid.alpha": 0.3,
+        }
+    )
+
+
+# ============================================================================
 # Vision/Text Style Definitions
 # ============================================================================
 
