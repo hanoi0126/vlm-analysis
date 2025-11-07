@@ -1,17 +1,15 @@
 """Script for logit analysis experiment (image vs text-only comparison with logit extraction)."""
 
-from pathlib import Path
-import sys
-
 import hydra
 from omegaconf import DictConfig, OmegaConf
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.config.schema import Config
 from src.models.registry import create_extractor
 from src.probing import run_extract_probe_decode
 from src.utils import get_experiment_output_dir
+from src.visualization.logit_plots import (
+    plot_choice_probabilities_across_layers,
+)
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -108,10 +106,153 @@ def main(cfg: DictConfig) -> None:
     if config.logit_analysis.save_full_logits:
         print("  - Full vocab logits: logits_all_l*.npy")
 
-    print("\nNext steps:")
-    print("  1. Use visualization scripts to analyze logit distributions")
-    print("  2. Compare confidence scores between image ON/OFF conditions")
-    print("  3. Identify cases where predictions differ")
+    # =========================================================================
+    # Part 3: Generate visualizations
+    # =========================================================================
+    print("\n" + "=" * 80)
+    print("PART 3: Generating Visualizations")
+    print("=" * 80)
+
+    plots_dir = logit_root / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Auto-detect layers from first task
+    first_task = config.experiment.tasks[0]
+    task_on_dir = logit_root / f"{first_task}_imageon"
+
+    if task_on_dir.exists():
+        logit_files = sorted(task_on_dir.glob("logits_choices_l*.npy"))
+        layers = [f.stem.replace("logits_choices_", "") for f in logit_files]
+        print(f"Detected layers: {layers}")
+    else:
+        print("Warning: Could not detect layers. Skipping visualization.")
+        layers = []
+
+    if layers:
+        for task in config.experiment.tasks:
+            print(f"\n--- Visualizing task: {task} ---")
+
+            task_on_dir = logit_root / f"{task}_imageon"
+            task_off_dir = logit_root / f"{task}_imageoff"
+
+            if not task_on_dir.exists() or not task_off_dir.exists():
+                print(f"  Warning: Task directories not found, skipping {task}")
+                continue
+
+            # Create task output directory
+            task_output = plots_dir / task
+            task_output.mkdir(parents=True, exist_ok=True)
+
+            # Visualize for each layer
+            # for layer in layers:
+            #     print(f"  Layer: {layer}")
+
+            #     # Load data
+            #     data_on = load_logit_data(task_on_dir, layer)
+            #     data_off = load_logit_data(task_off_dir, layer)
+
+            #     if "choice_logits" not in data_on or "choice_logits" not in data_off:
+            #         print(f"    Warning: Logit data not found for {layer}")
+            #         continue
+
+            #     try:
+            #         # Heatmap
+            #         plot_logit_heatmap(
+            #             data_on["choice_logits"],
+            #             data_off["choice_logits"],
+            #             data_on.get("choice_texts", []),
+            #             data_on["labels"],
+            #             layer,
+            #             task_output / f"{task}_{layer}_heatmap.png",
+            #             title=task.upper(),
+            #         )
+            #         print("    ✓ Heatmap saved")
+
+            #         # Scatter plot
+            #         plot_logit_scatter(
+            #             data_on["choice_logits"],
+            #             data_off["choice_logits"],
+            #             data_on.get("choice_texts", []),
+            #             data_on["labels"],
+            #             layer,
+            #             task_output / f"{task}_{layer}_scatter.png",
+            #             title=task.upper(),
+            #         )
+            #         print("    ✓ Scatter plot saved")
+
+            #         # Confidence distribution
+            #         plot_confidence_distribution(
+            #             data_on["choice_logits"],
+            #             data_off["choice_logits"],
+            #             data_on["labels"],
+            #             layer,
+            #             task_output / f"{task}_{layer}_confidence.png",
+            #             title=task.upper(),
+            #         )
+            #         print("    ✓ Confidence distribution saved")
+
+            #         # Mismatch analysis
+            #         df_mismatch = analyze_mismatch_cases(
+            #             logit_root,
+            #             task,
+            #             layer,
+            #             "_imageon",
+            #             "_imageoff",
+            #             task_output / f"{task}_{layer}_mismatch.csv",
+            #         )
+            #         if not df_mismatch.empty:
+            #             print(f"    ✓ Mismatch analysis saved ({len(df_mismatch)} cases)")
+
+            #     except Exception as e:
+            #         print(f"    Error generating plots for {layer}: {e}")
+
+            # # Layer ranking changes (using multiple layers)
+            # try:
+            #     plot_layer_ranking_changes(
+            #         logit_root,
+            #         task,
+            #         layers,
+            #         "_imageon",
+            #         "_imageoff",
+            #         task_output / f"{task}_layer_ranking.png",
+            #         title=task.upper(),
+            #     )
+            #     print("  ✓ Layer ranking plot saved")
+            # except Exception as e:
+            #     print(f"  Error generating layer ranking plot: {e}")
+
+            # # Choice probabilities across layers (mean)
+            # try:
+            #     plot_choice_probabilities_across_layers(
+            #         logit_root,
+            #         task,
+            #         layers,
+            #         "_imageon",
+            #         "_imageoff",
+            #         task_output / f"{task}_choice_probs_mean.png",
+            #         use_mean=True,
+            #     )
+            #     print("  ✓ Choice probabilities (mean) plot saved")
+            # except Exception as e:
+            #     print(f"  Error generating choice probabilities (mean) plot: {e}")
+
+            # Choice probabilities across layers (samples)
+            try:
+                plot_choice_probabilities_across_layers(
+                    results_root=logit_root,
+                    task=task,
+                    layers=layers,
+                    suffix_with_img="_imageon",
+                    suffix_no_img="_imageoff",
+                    output_path=task_output / f"{task}_choice_probs_samples.png",
+                    num_samples=5,
+                    use_mean=False,
+                )
+                print("  ✓ Choice probabilities (samples) plot saved")
+            except Exception as e:
+                print(f"  Error generating choice probabilities (samples) plot: {e}")
+
+        print(f"\n✓ All visualizations saved to: {plots_dir}")
 
     print("\n" + "=" * 80)
     print("Experiment completed!")

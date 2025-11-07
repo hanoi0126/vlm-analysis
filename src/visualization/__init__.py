@@ -3,6 +3,7 @@
 from .logit_plots import (
     analyze_mismatch_cases,
     load_logit_data,
+    plot_choice_probabilities_across_layers,
     plot_confidence_distribution,
     plot_layer_ranking_changes,
     plot_logit_heatmap,
@@ -23,6 +24,7 @@ __all__ = [
     "TASK_MARKERS",
     "analyze_mismatch_cases",
     "load_logit_data",
+    "plot_choice_probabilities_across_layers",
     "plot_comparison",
     "plot_confidence_distribution",
     "plot_cross_condition_gaps",

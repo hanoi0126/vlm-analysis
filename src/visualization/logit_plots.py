@@ -6,6 +6,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.special import softmax
 import seaborn as sns
 
 
@@ -403,3 +404,284 @@ def analyze_mismatch_cases(
         print(f"Saved mismatch analysis to {output_path}")
 
     return df
+
+
+def plot_choice_probabilities_across_layers(
+    results_root: Path,
+    task: str,
+    layers: list[str],
+    suffix_with_img: str = "_imageon",
+    suffix_no_img: str = "_imageoff",
+    output_path: Path | None = None,
+    num_samples: int = 5,
+    use_mean: bool = False,
+) -> None:
+    """
+    Plot choice probabilities (from logits) across layers for Image ON vs OFF.
+
+    Args:
+        results_root: Results root directory
+        task: Task name
+        layers: List of layer names to analyze
+        suffix_with_img: Suffix for image ON condition
+        suffix_no_img: Suffix for image OFF condition
+        output_path: Output file path
+        num_samples: Number of sample plots to generate (if use_mean=False)
+        use_mean: If True, plot mean probabilities across all samples
+    """
+    task_on_dir = results_root / f"{task}{suffix_with_img}"
+    task_off_dir = results_root / f"{task}{suffix_no_img}"
+
+    if not task_on_dir.exists() or not task_off_dir.exists():
+        print(f"Warning: Task directories not found for {task}")
+        return
+
+    # Load logits for all layers
+    logits_on_all = []
+    logits_off_all = []
+    choice_texts = None
+    labels = None
+
+    # Load decode logs for actual predictions
+    decode_log_on = None
+    decode_log_off = None
+    decode_log_on_path = task_on_dir / "decode_log.csv"
+    decode_log_off_path = task_off_dir / "decode_log.csv"
+
+    if decode_log_on_path.exists():
+        decode_log_on = pd.read_csv(decode_log_on_path)
+    if decode_log_off_path.exists():
+        decode_log_off = pd.read_csv(decode_log_off_path)
+
+    for layer in layers:
+        data_on = load_logit_data(task_on_dir, layer)
+        data_off = load_logit_data(task_off_dir, layer)
+
+        if "choice_logits" not in data_on or "choice_logits" not in data_off:
+            print(f"Warning: Logit data not found for layer {layer}")
+            continue
+
+        logits_on_all.append(data_on["choice_logits"])
+        logits_off_all.append(data_off["choice_logits"])
+
+        if choice_texts is None and "choice_texts" in data_on:
+            choice_texts = data_on["choice_texts"]
+        if labels is None and "labels" in data_on:
+            labels = data_on["labels"]
+
+    if not logits_on_all or not logits_off_all:
+        print(f"Warning: No logit data found for {task}")
+        return
+
+    # Convert to numpy arrays: (num_layers, num_samples, num_choices)
+    logits_on_array = np.array(logits_on_all)
+    logits_off_array = np.array(logits_off_all)
+
+    # Convert logits to probabilities using softmax
+    probs_on_array = softmax(logits_on_array, axis=2)
+    probs_off_array = softmax(logits_off_array, axis=2)
+
+    _num_layers, num_samples_total, num_choices = probs_on_array.shape
+
+    # Get choice labels
+    if choice_texts and len(choice_texts) > 0:
+        choice_labels = choice_texts[0]
+    else:
+        choice_labels = [f"Choice {i}" for i in range(num_choices)]
+
+    if use_mean:
+        # Plot mean probabilities across all samples
+        _plot_mean_probabilities(
+            probs_on_array,
+            probs_off_array,
+            layers,
+            choice_labels,
+            task,
+            output_path,
+        )
+    else:
+        # Plot individual samples
+        num_samples_to_plot = min(num_samples, num_samples_total)
+        _plot_sample_probabilities(
+            probs_on_array,
+            probs_off_array,
+            layers,
+            choice_labels,
+            labels,
+            num_samples_to_plot,
+            task,
+            output_path,
+            decode_log_on,
+            decode_log_off,
+        )
+
+
+def _plot_mean_probabilities(
+    probs_on: np.ndarray,
+    probs_off: np.ndarray,
+    layers: list[str],
+    choice_labels: list[str],
+    task: str,
+    output_path: Path | None,
+) -> None:
+    """Plot mean probabilities across all samples."""
+    # Calculate mean across samples: (num_layers, num_choices)
+    mean_probs_on = np.mean(probs_on, axis=1)
+    mean_probs_off = np.mean(probs_off, axis=1)
+
+    _fig, (ax_on, ax_off) = plt.subplots(1, 2, figsize=(16, 6))
+
+    layer_indices = range(len(layers))
+
+    # Plot Image ON
+    for choice_idx, label in enumerate(choice_labels):
+        ax_on.plot(
+            layer_indices,
+            mean_probs_on[:, choice_idx],
+            marker="o",
+            label=label,
+            linewidth=2,
+        )
+
+    ax_on.set_xlabel("Layer", fontsize=12)
+    ax_on.set_ylabel("Probability", fontsize=12)
+    ax_on.set_title(f"{task.upper()} - Image ON (Mean)", fontsize=14, fontweight="bold")
+    ax_on.set_xticks(layer_indices[:: max(1, len(layers) // 10)])
+    ax_on.set_xticklabels(layers[:: max(1, len(layers) // 10)])
+    ax_on.legend(loc="best")
+    ax_on.grid(True, alpha=0.3)
+    ax_on.set_ylim(0, 1)
+
+    # Plot Image OFF
+    for choice_idx, label in enumerate(choice_labels):
+        ax_off.plot(
+            layer_indices,
+            mean_probs_off[:, choice_idx],
+            marker="o",
+            label=label,
+            linewidth=2,
+        )
+
+    ax_off.set_xlabel("Layer", fontsize=12)
+    ax_off.set_ylabel("Probability", fontsize=12)
+    ax_off.set_title(f"{task.upper()} - Image OFF (Mean)", fontsize=14, fontweight="bold")
+    ax_off.set_xticks(layer_indices[:: max(1, len(layers) // 10)])
+    ax_off.set_xticklabels(layers[:: max(1, len(layers) // 10)])
+    ax_off.legend(loc="best")
+    ax_off.grid(True, alpha=0.3)
+    ax_off.set_ylim(0, 1)
+
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.close()
+    else:
+        plt.show()
+
+
+def _plot_sample_probabilities(
+    probs_on: np.ndarray,
+    probs_off: np.ndarray,
+    layers: list[str],
+    choice_labels: list[str],
+    labels: np.ndarray | None,
+    num_samples: int,
+    task: str,
+    output_path: Path | None,
+    decode_log_on: pd.DataFrame | None = None,
+    decode_log_off: pd.DataFrame | None = None,
+) -> None:
+    """Plot probabilities for individual samples."""
+    num_samples_total = probs_on.shape[1]
+
+    # Select samples to plot (evenly distributed)
+    sample_indices = np.linspace(0, num_samples_total - 1, num_samples, dtype=int)
+
+    fig, axes = plt.subplots(2, num_samples, figsize=(5 * num_samples, 10))
+    if num_samples == 1:
+        axes = axes.reshape(2, 1)
+
+    layer_indices = range(len(layers))
+
+    for sample_idx, real_sample_idx in enumerate(sample_indices):
+        # Get GT from decode_log (実際のground truth)
+        if decode_log_on is not None and real_sample_idx < len(decode_log_on):
+            gt_text = decode_log_on.iloc[real_sample_idx]["ground_truth"]
+            gt_label = f"GT: {gt_text}"
+        elif decode_log_off is not None and real_sample_idx < len(decode_log_off):
+            gt_text = decode_log_off.iloc[real_sample_idx]["ground_truth"]
+            gt_label = f"GT: {gt_text}"
+        elif labels is not None:
+            # Fallback to labels array
+            gt_label = f"GT: {choice_labels[labels[real_sample_idx]]}"
+        else:
+            gt_label = "GT: Unknown"
+
+        # Get actual predictions from decode_log (実際の生成結果)
+        if decode_log_on is not None and real_sample_idx < len(decode_log_on):
+            actual_pred_on = decode_log_on.iloc[real_sample_idx]["gen_parsed"]
+            pred_on_label = f"VLM: {actual_pred_on}" if actual_pred_on else "VLM: None"
+        else:
+            # Fallback to logit-based prediction
+            pred_on = np.argmax(probs_on[-1, real_sample_idx, :])
+            pred_on_label = f"VLM: {choice_labels[pred_on]}"
+
+        if decode_log_off is not None and real_sample_idx < len(decode_log_off):
+            actual_pred_off = decode_log_off.iloc[real_sample_idx]["gen_parsed"]
+            pred_off_label = f"LLM: {actual_pred_off}" if actual_pred_off else "LLM: None"
+        else:
+            # Fallback to logit-based prediction
+            pred_off = np.argmax(probs_off[-1, real_sample_idx, :])
+            pred_off_label = f"LLM: {choice_labels[pred_off]}"
+
+        # Image ON (top row)
+        ax_on = axes[0, sample_idx]
+        for choice_idx, label in enumerate(choice_labels):
+            ax_on.plot(
+                layer_indices,
+                probs_on[:, real_sample_idx, choice_idx],
+                marker="o",
+                label=label,
+                linewidth=2,
+            )
+
+        ax_on.set_xlabel("Layer")
+        ax_on.set_ylabel("Probability")
+        title_on = f"Sample {real_sample_idx} (Image ON)\n{gt_label} | {pred_on_label}"
+        ax_on.set_title(title_on, fontsize=10)
+        ax_on.set_xticks(layer_indices[:: max(1, len(layers) // 5)])
+        ax_on.set_xticklabels(layers[:: max(1, len(layers) // 5)], rotation=45, ha="right")
+        ax_on.legend(loc="best", fontsize=8)
+        ax_on.grid(True, alpha=0.3)
+        ax_on.set_ylim(0, 1)
+
+        # Image OFF (bottom row)
+        ax_off = axes[1, sample_idx]
+        for choice_idx, label in enumerate(choice_labels):
+            ax_off.plot(
+                layer_indices,
+                probs_off[:, real_sample_idx, choice_idx],
+                marker="o",
+                label=label,
+                linewidth=2,
+            )
+
+        ax_off.set_xlabel("Layer")
+        ax_off.set_ylabel("Probability")
+        title_off = f"Sample {real_sample_idx} (Image OFF)\n{gt_label} | {pred_off_label}"
+        ax_off.set_title(title_off, fontsize=10)
+        ax_off.set_xticks(layer_indices[:: max(1, len(layers) // 5)])
+        ax_off.set_xticklabels(layers[:: max(1, len(layers) // 5)], rotation=45, ha="right")
+        ax_off.legend(loc="best", fontsize=8)
+        ax_off.grid(True, alpha=0.3)
+        ax_off.set_ylim(0, 1)
+
+    fig.suptitle(f"{task.upper()} - Choice Probabilities Across Layers", fontsize=16, fontweight="bold", y=0.995)
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.close()
+    else:
+        plt.show()
