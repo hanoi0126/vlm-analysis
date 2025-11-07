@@ -437,12 +437,12 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
         batch_size = len(choice_token_ids_all)
 
         # Store layer-wise choice logits
-        layer_choice_logits = {layer_name: [] for layer_name in self._tap.layers}
+        layer_choice_logits: dict[str, list[torch.Tensor]] = {layer_name: [] for layer_name in self._tap.layers}
 
         # Process each sample in the batch
         for sample_idx in range(batch_size):
             sample_choices = choice_token_ids_all[sample_idx]
-            sample_choice_logits = {layer_name: [] for layer_name in self._tap.layers}
+            sample_choice_logits: dict[str, list[float]] = {layer_name: [] for layer_name in self._tap.layers}
 
             # Get original input for this sample
             # Note: batch contains processed inputs, we need to get the original input_ids
