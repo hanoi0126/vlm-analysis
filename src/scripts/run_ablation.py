@@ -65,12 +65,15 @@ def main(cfg: DictConfig) -> None:
     run_combination_exp = phases_cfg.get("combination", True)
 
     # Get target layers if specified
-    target_layers = None
+    target_layers: str | list[int] | None = None
     if "target_layers" in ablation_cfg and ablation_cfg.get("target_layers") is not None:
         layers = ablation_cfg.get("target_layers")
+        # Handle "all" keyword
+        if isinstance(layers, str) and layers.lower() == "all":
+            target_layers = "all"  # Will be expanded after model loading
         # Convert to list if needed (Hydra might return ListConfig)
-        if isinstance(layers, (list, tuple)) or hasattr(layers, "__iter__"):
-            target_layers = list(layers)
+        elif isinstance(layers, (list, tuple)) or hasattr(layers, "__iter__"):
+            target_layers = [int(layer) for layer in layers]
         else:
             target_layers = None
 
@@ -80,7 +83,9 @@ def main(cfg: DictConfig) -> None:
     print(f"Batch size: {config.batch_size}")
     print(f"Output: {config.output.results_root}")
     print(f"Experiments: Layer={run_layer_ablation_exp}, Head={run_head_ablation_exp}, Combination={run_combination_exp}")
-    if target_layers:
+    if target_layers == "all":
+        print("Target layers: all (will be expanded after model loading)")
+    elif target_layers:
         print(f"Target layers: {target_layers}")
     else:
         print("Target layers: Not specified (will use layer ablation results or default)")
@@ -109,11 +114,16 @@ def main(cfg: DictConfig) -> None:
     print(f"  Number of layers: {num_layers}")
     print(f"  Number of attention heads (Q): {num_heads}")
 
+    # Expand "all" to full layer list
+    if target_layers == "all":
+        target_layers = list(range(num_layers))
+        print(f"\nExpanded 'all' to {num_layers} layers: [0, 1, 2, ..., {num_layers - 1}]")
+
     # Results storage
     layer_results = None
     head_results = None
     combination_results = None
-    critical_layers = target_layers
+    critical_layers: list[int] | None = target_layers if isinstance(target_layers, list) else None
 
     # Layer-level ablation
     if run_layer_ablation_exp:
