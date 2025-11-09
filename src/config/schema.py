@@ -77,7 +77,7 @@ class PRAGConfig(BaseModel):
 
     enabled: bool = Field(default=False, description="Enable PRAG experiments")
     save_probe_weights: bool = Field(default=False, description="Save probe weights for PRAG calculation")
-    target_layer: str = Field(default="best", description="Target layer for PRAG calculation (e.g., 'l19' or 'best')")
+    target_layer: str = Field(default="last", description="Target layer for PRAG calculation (e.g., 'l19' or 'last')")
     statistics: dict[str, Any] = Field(
         default_factory=lambda: {
             "bootstrap_samples": 1000,

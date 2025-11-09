@@ -1,6 +1,7 @@
 """Qwen2.5-VL feature extractor."""
 
 import re
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -300,11 +301,15 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
             self._tap.gen_texts = outs
             self._tap.gen_parsed = parsed
 
-            # Average output features
+            # Average output features (all generation steps)
             for tag, s in self._gen_sum.items():
                 cnt = max(1, self._gen_cnt.get(tag, 1))
                 avg = s / cnt
                 self._tap.layers[f"{tag}_outavg"] = avg
+
+            # Extract features at answer generation time ({answer} format)
+            # This captures the hidden states when generating the answer token
+            self._extract_answer_generation_features(batch, sequences, prompt_lens, tok)
 
             self._in_gen = False
             self._gen_sum, self._gen_cnt = {}, {}
@@ -314,6 +319,153 @@ class QwenVLFeatureExtractor(BaseFeatureExtractor):
             self._extract_choice_logits(batch, options)
 
         return self._tap
+
+    def _extract_answer_generation_features(
+        self,
+        batch: dict,
+        sequences: torch.Tensor,
+        prompt_lens: torch.Tensor,
+        tokenizer: Any,
+    ) -> None:
+        """
+        Extract features at the moment when answer tokens are generated.
+
+        For {answer} format, extracts features when generating:
+        - Option 1: '{' token (start of answer)
+        - Option 2: answer token itself (e.g., 'blue', '1', etc.)
+
+        Args:
+            batch: Original input batch
+            sequences: Generated sequences [batch_size, seq_len]
+            prompt_lens: Prompt lengths for each sample [batch_size]
+            tokenizer: Tokenizer instance
+        """
+        # Find answer token positions for each sample
+        answer_positions: list[int | None] = []
+        answer_token_ids: list[int | None] = []
+
+        for i in range(sequences.size(0)):
+            start = int(prompt_lens[i].item())
+            new_tokens = sequences[i, start:].tolist()
+
+            # Try to find answer token position
+            # Priority 1: Find answer token itself (e.g., 'blue', '1', etc.)
+            answer_pos = None
+            answer_token_id = None
+
+            if self._tap.gen_parsed and i < len(self._tap.gen_parsed):
+                answer_text = self._tap.gen_parsed[i]
+                if answer_text:
+                    # Tokenize answer text
+                    answer_token_ids_list = tokenizer.encode(answer_text, add_special_tokens=False)
+                    if len(answer_token_ids_list) > 0:
+                        # Find first occurrence of answer token (first token of answer)
+                        answer_id = answer_token_ids_list[0]
+                        try:
+                            answer_pos_in_new = new_tokens.index(answer_id)
+                            answer_pos = start + answer_pos_in_new
+                            answer_token_id = answer_id
+                        except ValueError:
+                            pass
+
+            # Priority 2: If answer token not found, try to find '{' token
+            # Then use the token AFTER '{' (which should be the answer token)
+            if answer_pos is None:
+                brace_token_id = tokenizer.encode("{", add_special_tokens=False)
+                if len(brace_token_id) > 0:
+                    brace_id = brace_token_id[0]
+                    try:
+                        brace_pos = new_tokens.index(brace_id)
+                        # Use position AFTER '{' token (answer token position)
+                        if brace_pos + 1 < len(new_tokens):
+                            answer_pos = start + brace_pos + 1
+                            answer_token_id = new_tokens[brace_pos + 1]
+                        else:
+                            # Fallback: use '{' token position if no token after
+                            answer_pos = start + brace_pos
+                            answer_token_id = brace_id
+                    except ValueError:
+                        pass
+
+            # Fallback: use first generated token
+            if answer_pos is None:
+                if len(new_tokens) > 0:
+                    answer_positions.append(start)
+                    answer_token_ids.append(new_tokens[0])
+                else:
+                    answer_positions.append(None)
+                    answer_token_ids.append(None)
+            else:
+                answer_positions.append(answer_pos)
+                answer_token_ids.append(answer_token_id)
+
+        # Extract features at answer positions
+        if any(pos is not None for pos in answer_positions):
+            self._capture_enabled = False  # Disable hooks temporarily
+            answer_features: dict[str, list[torch.Tensor]] = {}
+
+            # Process samples in batches for efficiency
+            valid_samples = [
+                (i, pos, tid) for i, (pos, tid) in enumerate(zip(answer_positions, answer_token_ids, strict=False)) if pos is not None
+            ]
+
+            if not valid_samples:
+                self._capture_enabled = True
+                return
+
+            # Group samples by answer position for batch processing (if possible)
+            # For now, process individually to handle variable positions
+            for i, answer_pos, _answer_token_id in valid_samples:
+                # Create input up to answer position (including answer token)
+                # This gives us the hidden state RIGHT BEFORE generating the answer token
+                # We want the state when the model is ABOUT TO generate the answer token
+                sample_sequence = sequences[i : i + 1, :answer_pos]  # Up to (but not including) answer token
+                seq_len = answer_pos - int(prompt_lens[i].item())
+                if seq_len <= 0:
+                    # Skip if invalid position
+                    continue
+
+                sample_attention = torch.ones((1, answer_pos), dtype=torch.long, device=sequences.device)
+
+                # Prepare batch for forward pass
+                sample_batch = {
+                    "input_ids": sample_sequence,
+                    "attention_mask": sample_attention,
+                }
+
+                # Copy other necessary inputs
+                if "pixel_values" in batch:
+                    sample_batch["pixel_values"] = batch["pixel_values"][i : i + 1]
+                if "image_grid_thw" in batch:
+                    sample_batch["image_grid_thw"] = batch["image_grid_thw"][i : i + 1]
+
+                # Forward pass to get features RIGHT BEFORE generating answer token
+                with torch.no_grad():
+                    try:
+                        outputs = self.model(**sample_batch, output_hidden_states=True, return_dict=True)
+
+                        if outputs.hidden_states:
+                            # Extract features from all layers at last position (right before answer token)
+                            for layer_idx, hidden_state in enumerate(outputs.hidden_states):
+                                layer_name = f"l{layer_idx:02d}"
+                                # Get last token hidden state (right before generating answer token)
+                                answer_hidden = hidden_state[:, -1, :]  # [1, hidden_dim]
+
+                                if layer_name not in answer_features:
+                                    answer_features[layer_name] = []
+                                answer_features[layer_name].append(answer_hidden.cpu())
+                    except Exception as e:
+                        # Skip this sample if forward pass fails
+                        print(f"[WARN] Failed to extract answer features for sample {i}: {e}")
+                        continue
+
+            # Stack features for all samples
+            self._capture_enabled = True
+            for layer_name, feature_list in answer_features.items():
+                if feature_list:
+                    stacked_features = torch.cat(feature_list, dim=0)  # [batch_size, hidden_dim]
+                    # Store as answer generation features
+                    self._tap.layers[f"{layer_name}_answer"] = stacked_features
 
     def _extract_choice_logits(self, batch: dict, options: list[list[str]]) -> None:
         """
