@@ -140,7 +140,7 @@ def run_progressive_multi_head_ablation(
     print(f"n_trials per n_heads: {n_trials}")
     print(f"Random seed: {random_seed}")
 
-    results = {
+    results: dict[str, Any] = {
         "baseline": baseline_results,
         "ablation": {},
         "config": {
@@ -253,7 +253,7 @@ def run_progressive_multi_head_ablation(
 
                 layer_results[n_heads] = trial_results
 
-            results["ablation"][layer_idx] = layer_results
+            results["ablation"][str(layer_idx)] = layer_results
 
     # Phase 3: Statistical Analysis
     print("\n" + "=" * 80)
@@ -319,7 +319,7 @@ def analyze_multi_head_results(
 
         for n_heads, trials in layer_results.items():
             # Aggregate across trials
-            task_accuracies_per_trial = {task: [] for task in tasks}
+            task_accuracies_per_trial: dict[str, list[float]] = {task: [] for task in tasks}
 
             for trial in trials:
                 for task, acc in trial["accuracies"].items():

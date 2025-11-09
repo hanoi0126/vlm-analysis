@@ -486,11 +486,12 @@ def plot_progressive_effect(
     """
     apply_plot_style()
 
-    if layer_idx not in analysis:
+    layer_idx_str = str(layer_idx)
+    if layer_idx_str not in analysis:
         msg = f"Layer {layer_idx} not found in analysis"
         raise ValueError(msg)
 
-    layer_analysis = analysis[layer_idx]
+    layer_analysis = analysis[layer_idx_str]
     n_heads_list = sorted([int(k) for k in layer_analysis])
 
     fig, axes = plt.subplots(2, 4, figsize=figsize)
@@ -598,13 +599,15 @@ def plot_layer_nheads_heatmap(
 
     # Get n_heads values from first layer
     first_layer = layers[0]
-    n_heads_values = sorted([int(k) for k in multi_layer_analysis[first_layer]])
+    first_layer_str = str(first_layer)
+    n_heads_values = sorted([int(k) for k in multi_layer_analysis[first_layer_str]])
 
     # Prepare data matrix
     matrix = np.zeros((len(layers), len(n_heads_values)))
 
     for i, layer in enumerate(layers):
-        layer_analysis = multi_layer_analysis[layer]
+        layer_str = str(layer)
+        layer_analysis = multi_layer_analysis[layer_str]
         for j, n_heads in enumerate(n_heads_values):
             if n_heads in layer_analysis:
                 matrix[i, j] = layer_analysis[n_heads][metric]
@@ -657,11 +660,12 @@ def plot_threshold_detection(
     """
     apply_plot_style()
 
-    if layer_idx not in analysis:
+    layer_idx_str = str(layer_idx)
+    if layer_idx_str not in analysis:
         msg = f"Layer {layer_idx} not found in analysis"
         raise ValueError(msg)
 
-    layer_analysis = analysis[layer_idx]
+    layer_analysis = analysis[layer_idx_str]
     n_heads_list = sorted([int(k) for k in layer_analysis])
     overall_means = [layer_analysis[n]["overall_mean"] for n in n_heads_list]
 
@@ -736,11 +740,12 @@ def plot_task_specific_thresholds(
     """
     apply_plot_style()
 
-    if layer_idx not in analysis:
+    layer_idx_str = str(layer_idx)
+    if layer_idx_str not in analysis:
         msg = f"Layer {layer_idx} not found in analysis"
         raise ValueError(msg)
 
-    layer_analysis = analysis[layer_idx]
+    layer_analysis = analysis[layer_idx_str]
     n_heads_list = sorted([int(k) for k in layer_analysis])
 
     task_thresholds = {}
