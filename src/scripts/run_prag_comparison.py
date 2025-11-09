@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import sys
+import traceback
 
 import hydra
 import numpy as np
@@ -16,10 +17,15 @@ from typing import Any
 from src.config.schema import Config
 from src.data import HuggingFaceDataset
 from src.models.registry import create_extractor
-from src.probing.prag_analysis import analyze_prag_with_dataset_classes
+from src.probing.prag import extract_probe_weights, get_lm_head_weights, get_task_vocab_embeddings
+from src.probing.prag_analysis import analyze_prag_by_attribute, analyze_prag_with_dataset_classes
+from src.probing.prag_layers import track_prag_across_layers
 from src.probing.prag_statistics import PRAGStatistics
+from src.probing.readout_intervention import compare_baseline_vs_intervention
 from src.probing.runner import run_extract_probe_decode
 from src.utils import get_experiment_output_dir
+from src.utils.model_utils import get_model_architecture_info
+from src.visualization.prag_plots import plot_prag_figure1, plot_prag_figure2
 
 
 def convert_to_json_serializable(obj: Any) -> Any:  # noqa: PLR0911
@@ -85,11 +91,38 @@ def main(cfg: DictConfig) -> None:
     prag_root = get_experiment_output_dir(config.output.results_root, experiment_name, config.model.model_id)
     print(f"\nExperiment output directory: {prag_root}")
 
+    # Create output directory for data files (plots will be in plots/)
+    output_dir = prag_root / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = prag_root / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
     # Determine target layer
-    target_layer = getattr(config.prag, "target_layer", "best") if hasattr(config, "prag") else "best"
-    if target_layer == "best":
-        # Use a middle layer as default (e.g., l19)
-        target_layer = "l19"
+    target_layer = getattr(config.prag, "target_layer", "last") if hasattr(config, "prag") else "last"
+    if target_layer == "last":
+        # Use the last layer (same as unembedding layer)
+        # Get available tap points and find the last layer
+        tap_points = extractor.get_tap_points()
+        # Filter layer points (format: l00, l01, ..., l31)
+        layer_points = [p for p in tap_points if p.startswith("l") and len(p) >= 2 and p[1:].isdigit()]
+        if layer_points:
+            # Extract layer numbers and find the maximum
+            layer_nums = [int(p[1:]) for p in layer_points]
+            last_layer_num = max(layer_nums)
+            target_layer = f"l{last_layer_num:02d}"
+            print(f"Auto-detected last layer: {target_layer} (from {len(layer_points)} available layers)")
+        else:
+            # Fallback: try to get from model config
+            try:
+                arch_info = get_model_architecture_info(extractor.model)  # type: ignore[arg-type]
+                num_layers = arch_info["num_layers"]
+                last_layer_num = num_layers - 1
+                target_layer = f"l{last_layer_num:02d}"
+                print(f"Auto-detected last layer from config: {target_layer} ({num_layers} total layers)")
+            except Exception:
+                # Final fallback: use l19 (middle layer for common models)
+                target_layer = "l19"
+                print(f"Warning: Could not auto-detect last layer, using default: {target_layer}")
     print(f"Target layer for PRAG: {target_layer}")
 
     # =========================================================================
@@ -99,7 +132,8 @@ def main(cfg: DictConfig) -> None:
     print("PART 1: Running WITH images (VLM condition)")
     print("=" * 80)
 
-    config.output.results_root = prag_root
+    # Set results_root to output_dir so task directories are created in output/
+    config.output.results_root = output_dir
 
     print(f"\nExtracting features for tasks: {config.experiment.tasks}")
     summary_vlm = run_extract_probe_decode(
@@ -140,6 +174,11 @@ def main(cfg: DictConfig) -> None:
     prag_results = []
     stats_obj = PRAGStatistics()
 
+    # Store data for visualization
+    probe_unembedding_data: dict[str, dict[str, np.ndarray]] = {}
+    prag_vlm_results_dict: dict[str, dict[str, Any]] = {}
+    prag_llm_results_dict: dict[str, dict[str, Any]] = {}
+
     for task in config.experiment.tasks:
         print(f"\nProcessing task: {task}")
 
@@ -164,8 +203,8 @@ def main(cfg: DictConfig) -> None:
         )
 
         # Load features
-        task_dir_vlm = prag_root / f"{task}_vlm"
-        task_dir_llm = prag_root / f"{task}_llm"
+        task_dir_vlm = output_dir / f"{task}_vlm"
+        task_dir_llm = output_dir / f"{task}_llm"
 
         features_path_vlm = task_dir_vlm / f"features_{target_layer}.npy"
         features_path_llm = task_dir_llm / f"features_{target_layer}.npy"
@@ -189,6 +228,10 @@ def main(cfg: DictConfig) -> None:
         labels_llm = np.load(labels_path_llm)
 
         # Compute PRAG for VLM
+        # Enable debug mode if explicitly enabled in config
+        debug_mode = getattr(config.prag, "debug", False)
+        if debug_mode:
+            print(f"[DEBUG] Debug mode enabled for task: {task}")
         try:
             prag_vlm_result = analyze_prag_with_dataset_classes(
                 extractor=extractor,
@@ -199,8 +242,40 @@ def main(cfg: DictConfig) -> None:
                 max_iter=config.probe.max_iter,
                 C=config.probe.C,
                 solver=config.probe.solver,
+                debug=debug_mode,
             )
             prag_vlm = prag_vlm_result["prag"]["prag_mean"]
+            prag_vlm_results_dict[task] = prag_vlm_result
+
+            # Extract probe and unembedding weights for visualization (use VLM as representative)
+            if "task_classes" in prag_vlm_result:
+                # Re-extract weights for visualization
+                probe_weights_vlm, _ = extract_probe_weights(
+                    features_vlm,
+                    labels_vlm,
+                    max_iter=config.probe.max_iter,
+                    C=config.probe.C,
+                    solver=config.probe.solver,
+                    use_all_data=True,
+                )
+                lm_head_weights = get_lm_head_weights(extractor)
+                tokenizer = extractor.processor.tokenizer  # type: ignore[union-attr]
+                # Use multi-token aware embedding extraction
+                unembedding_weights_torch, _ = get_task_vocab_embeddings(
+                    tokenizer=tokenizer,
+                    task_classes=ds_vlm.classes,
+                    lm_head_weights=lm_head_weights,
+                    use_average_embedding=True,
+                    verbose=False,
+                )
+                unembedding_weights = unembedding_weights_torch.numpy()
+
+                # Align dimensions
+                min_classes = min(probe_weights_vlm.shape[0], unembedding_weights.shape[0])
+                probe_unembedding_data[task] = {
+                    "probe": probe_weights_vlm[:min_classes],
+                    "unembedding": unembedding_weights[:min_classes],
+                }
         except Exception as e:
             print(f"[ERROR] Failed to compute PRAG for VLM {task}: {e}")
             prag_vlm = np.nan
@@ -217,8 +292,10 @@ def main(cfg: DictConfig) -> None:
                 max_iter=config.probe.max_iter,
                 C=config.probe.C,
                 solver=config.probe.solver,
+                debug=debug_mode,
             )
             prag_llm = prag_llm_result["prag"]["prag_mean"]
+            prag_llm_results_dict[task] = prag_llm_result
         except Exception as e:
             print(f"[ERROR] Failed to compute PRAG for LLM {task}: {e}")
             prag_llm = np.nan
@@ -285,7 +362,7 @@ def main(cfg: DictConfig) -> None:
     # =========================================================================
     # Part 5: Save results
     # =========================================================================
-    results_path = prag_root / "prag_comparison_results.json"
+    results_path = output_dir / "prag_comparison_results.json"
     with open(results_path, "w", encoding="utf-8") as f:
         results_dict = {
             "per_task": df_results.to_dict(orient="records"),
@@ -300,9 +377,215 @@ def main(cfg: DictConfig) -> None:
     print(f"\nResults saved to: {results_path}")
 
     # Save CSV
-    csv_path = prag_root / "prag_comparison_results.csv"
+    csv_path = output_dir / "prag_comparison_results.csv"
     df_results.to_csv(csv_path, index=False)
     print(f"CSV saved to: {csv_path}")
+
+    # =========================================================================
+    # Part 6: Generate visualizations
+    # =========================================================================
+    if config.output.save_plots:
+        print("\n" + "=" * 80)
+        print("PART 6: Generating visualizations")
+        print("=" * 80)
+
+        # Prepare comparison results dict for visualization
+        prag_comparison_results = {
+            "per_task": df_results.to_dict(orient="records"),
+            "overall": overall_test if overall_test is not None else None,
+        }
+
+        # Collect layer-wise results for Panel C
+        layer_wise_results: dict[str, pd.DataFrame] = {}
+        print("\nCollecting layer-wise PRAG data...")
+        for task in config.experiment.tasks:
+            try:
+                # Use VLM condition for layer-wise analysis
+                task_dir_vlm = output_dir / f"{task}_vlm"
+                if task_dir_vlm.exists():
+                    actual_split = task if config.dataset.hf_split == "auto" else config.dataset.hf_split
+                    filter_task = None if actual_split == task else task
+                    ds_vlm = HuggingFaceDataset(
+                        dataset_name=config.dataset.hf_dataset,  # type: ignore[arg-type]
+                        split=actual_split,
+                        subset=config.dataset.hf_subset,
+                        task=filter_task,
+                        cache_dir=None,
+                    )
+                    layer_df = track_prag_across_layers(
+                        extractor=extractor,
+                        dataset=ds_vlm,
+                        results_root=output_dir,
+                        task=f"{task}_vlm",
+                        layer_names=None,  # Auto-detect
+                        max_iter=config.probe.max_iter,
+                        C=config.probe.C,
+                        solver=config.probe.solver,
+                    )
+                    if not layer_df.empty:
+                        layer_wise_results[task] = layer_df
+            except Exception as e:
+                print(f"[WARN] Failed to collect layer-wise data for {task}: {e}")
+
+        # Collect attribute analysis for Panel D
+        attribute_analysis: pd.DataFrame | None = None
+        print("\nCollecting attribute-wise PRAG data...")
+        try:
+            # Use VLM condition results - need to use task names with _vlm suffix
+            vlm_task_names = [f"{task}_vlm" for task in config.experiment.tasks]
+            attribute_analysis = analyze_prag_by_attribute(
+                extractor=extractor,
+                results_root=output_dir,
+                attributes=vlm_task_names,
+                layer_name=target_layer,
+                max_iter=config.probe.max_iter,
+                C=config.probe.C,
+                solver=config.probe.solver,
+            )
+            # Rename attributes back to original task names for display
+            if attribute_analysis is not None and not attribute_analysis.empty and "attribute" in attribute_analysis.columns:
+                attribute_analysis["attribute"] = attribute_analysis["attribute"].str.replace("_vlm", "", regex=False)
+        except Exception as e:
+            print(f"[WARN] Failed to collect attribute analysis: {e}")
+
+        # Generate Figure 1
+        figure1_path = plots_dir / "prag_figure1.png"
+        try:
+            plot_prag_figure1(
+                results_root=output_dir,
+                tasks=config.experiment.tasks,
+                prag_comparison_results=prag_comparison_results,
+                layer_wise_results=layer_wise_results if layer_wise_results else None,
+                attribute_analysis=attribute_analysis,
+                probe_unembedding_data=probe_unembedding_data if probe_unembedding_data else None,
+                target_layer=target_layer,
+                output_path=figure1_path,
+            )
+            print(f"Figure 1 saved to: {figure1_path}")
+        except Exception as e:
+            print(f"[WARN] Failed to generate Figure 1: {e}")
+            traceback.print_exc()
+
+        # =========================================================================
+        # Part 7: Run readout intervention experiment and generate Figure 2
+        # =========================================================================
+        print("\n" + "=" * 80)
+        print("PART 7: Running readout intervention experiment")
+        print("=" * 80)
+
+        readout_intervention_results: dict[str, Any] | None = None
+
+        # Select a representative task for intervention (use first task or task with lowest PRAG)
+        if config.experiment.tasks:
+            # Use first task as representative
+            intervention_task = config.experiment.tasks[0]
+            print(f"\nRunning readout intervention for task: {intervention_task}")
+
+            try:
+                # Load dataset and features for intervention task
+                actual_split = intervention_task if config.dataset.hf_split == "auto" else config.dataset.hf_split
+                filter_task = None if actual_split == intervention_task else intervention_task
+
+                print(f"  Loading dataset: split={actual_split}, task={filter_task}")
+                ds_intervention = HuggingFaceDataset(
+                    dataset_name=config.dataset.hf_dataset,  # type: ignore[arg-type]
+                    split=actual_split,
+                    subset=config.dataset.hf_subset,
+                    task=filter_task,
+                    cache_dir=None,
+                )
+                print(f"  Dataset loaded: {len(ds_intervention)} samples, classes: {ds_intervention.classes}")
+
+                # Load features and labels for VLM condition
+                task_dir_vlm = output_dir / f"{intervention_task}_vlm"
+                features_path_vlm = task_dir_vlm / f"features_{target_layer}.npy"
+                labels_path_vlm = task_dir_vlm / "labels.npy"
+
+                print("  Checking files:")
+                print(f"    Features: {features_path_vlm} (exists: {features_path_vlm.exists()})")
+                print(f"    Labels: {labels_path_vlm} (exists: {labels_path_vlm.exists()})")
+
+                if not features_path_vlm.exists():
+                    print(f"[ERROR] Features file not found: {features_path_vlm}")
+                    print(f"        Expected directory: {task_dir_vlm}")
+                if not labels_path_vlm.exists():
+                    print(f"[ERROR] Labels file not found: {labels_path_vlm}")
+
+                if features_path_vlm.exists() and labels_path_vlm.exists():
+                    print("  Loading features and labels...")
+                    features_vlm = np.load(features_path_vlm)
+                    labels_vlm = np.load(labels_path_vlm)
+                    print(f"  Loaded features: shape={features_vlm.shape}, labels: shape={labels_vlm.shape}")
+
+                    # Extract probe weights
+                    print("  Extracting probe weights...")
+                    probe_weights, _ = extract_probe_weights(
+                        features_vlm,
+                        labels_vlm,
+                        max_iter=config.probe.max_iter,
+                        C=config.probe.C,
+                        solver=config.probe.solver,
+                        use_all_data=True,
+                    )
+                    print(f"  Probe weights extracted: shape={probe_weights.shape}")
+
+                    # Run intervention experiment
+                    print("  Running baseline vs intervention comparison...")
+                    # Set output path for CSV
+                    intervention_csv_path = output_dir / f"{intervention_task}_intervention_results.csv"
+                    intervention_result = compare_baseline_vs_intervention(
+                        extractor=extractor,
+                        dataset=ds_intervention,
+                        probe_weights=probe_weights,
+                        task_classes=ds_intervention.classes,
+                        batch_size=getattr(config, "batch_size", 8),
+                        max_new_tokens=getattr(config, "max_new_tokens", 32),
+                        device=config.model.device,
+                        output_path=intervention_csv_path,
+                    )
+
+                    readout_intervention_results = {
+                        "baseline_acc": intervention_result["baseline_acc"],
+                        "intervention_acc": intervention_result["intervention_acc"],
+                        "improvement": intervention_result["improvement"],
+                        "relative_improvement": intervention_result["relative_improvement"],
+                        "task": intervention_task,
+                    }
+
+                    print("\n✓ Intervention results:")
+                    print(f"  Baseline accuracy: {intervention_result['baseline_acc']:.4f}")
+                    print(f"  Intervention accuracy: {intervention_result['intervention_acc']:.4f}")
+                    print(f"  Improvement: {intervention_result['improvement']:.4f}")
+                    print(f"  Relative improvement: {intervention_result['relative_improvement']:.2f}%")
+
+                else:
+                    print(f"[ERROR] Missing required files for intervention task {intervention_task}")
+                    print("        Cannot proceed without features and labels files.")
+
+            except Exception as e:
+                print(f"[ERROR] Failed to run readout intervention: {e}")
+                print(f"        Error type: {type(e).__name__}")
+                traceback.print_exc()
+                # Set error information for debugging
+                readout_intervention_results = {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "task": intervention_task if "intervention_task" in locals() else "unknown",
+                }
+        else:
+            print("[WARN] No tasks configured, skipping readout intervention experiment")
+
+        # Generate Figure 2
+        figure2_path = plots_dir / "prag_figure2.png"
+        try:
+            plot_prag_figure2(
+                readout_intervention_results=readout_intervention_results,
+                output_path=figure2_path,
+            )
+            print(f"Figure 2 saved to: {figure2_path}")
+        except Exception as e:
+            print(f"[WARN] Failed to generate Figure 2: {e}")
+            traceback.print_exc()
 
     print("\n" + "=" * 80)
     print("Experiment completed!")

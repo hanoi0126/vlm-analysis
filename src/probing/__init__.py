@@ -2,8 +2,11 @@
 
 from .prag import (
     compute_prag,
+    debug_llm_condition,
+    debug_unembedding_extraction,
     extract_probe_weights,
     get_lm_head_weights,
+    get_task_vocab_embeddings,
     get_task_vocab_ids,
 )
 from .prag_analysis import (
@@ -30,9 +33,12 @@ __all__ = [
     "analyze_prag_with_dataset_classes",
     "compare_baseline_vs_intervention",
     "compute_prag",
+    "debug_llm_condition",
+    "debug_unembedding_extraction",
     "evaluate_with_probe_readout",
     "extract_probe_weights",
     "get_lm_head_weights",
+    "get_task_vocab_embeddings",
     "get_task_vocab_ids",
     "probe_all_tasks",
     "run_extract_probe_decode",

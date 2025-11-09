@@ -13,7 +13,7 @@ from src.probing.prag import (
     compute_prag,
     extract_probe_weights,
     get_lm_head_weights,
-    get_task_vocab_ids,
+    get_task_vocab_embeddings,
 )
 from src.probing.trainer import train_eval_probe
 
@@ -58,10 +58,14 @@ def track_prag_across_layers(
     # Get class names from dataset
     task_classes = dataset.classes  # Sorted class names
 
-    # Get task vocabulary IDs
-    vocab_ids, _class_to_vocab_id = get_task_vocab_ids(tokenizer, task_classes)
-    vocab_ids_tensor = torch.tensor(vocab_ids)
-    e_task = lm_head_weights[vocab_ids_tensor]  # [num_classes, hidden_dim]
+    # Get task vocabulary embeddings (handles multi-token classes)
+    e_task, _token_info = get_task_vocab_embeddings(
+        tokenizer=tokenizer,
+        task_classes=task_classes,
+        lm_head_weights=lm_head_weights,
+        use_average_embedding=True,
+        verbose=False,
+    )
 
     # Load labels
     labels_path = task_dir / "labels.npy"
@@ -129,16 +133,22 @@ def track_prag_across_layers(
         if layer_name in probe_acc_by_layer:
             probe_acc = probe_acc_by_layer[layer_name]
 
+        # Convert probe_weights to torch tensor if needed
+        if isinstance(probe_weights, np.ndarray):
+            probe_weights_torch = torch.from_numpy(probe_weights).float()
+        else:
+            probe_weights_torch = probe_weights.float()  # type: ignore[unreachable]
+
         # Ensure probe_weights and e_task have same number of classes
-        if probe_weights.shape[0] != e_task.shape[0]:
-            min_classes = min(probe_weights.shape[0], e_task.shape[0])
-            probe_weights = probe_weights[:min_classes]
+        if probe_weights_torch.shape[0] != e_task.shape[0]:
+            min_classes = min(probe_weights_torch.shape[0], e_task.shape[0])
+            probe_weights_torch = probe_weights_torch[:min_classes]
             e_task_aligned = e_task[:min_classes]
         else:
             e_task_aligned = e_task
 
         # Compute PRAG
-        prag_result = compute_prag(probe_weights, e_task_aligned)
+        prag_result = compute_prag(probe_weights_torch, e_task_aligned, verbose=False)
 
         # Get decode accuracy
         decode_acc = decode_acc_by_layer.get(layer_name, np.nan)
@@ -197,10 +207,14 @@ def track_prag_across_layers_from_features(
     # Get class names from dataset
     task_classes = dataset.classes  # Sorted class names
 
-    # Get task vocabulary IDs
-    vocab_ids, _class_to_vocab_id = get_task_vocab_ids(tokenizer, task_classes)
-    vocab_ids_tensor = torch.tensor(vocab_ids)
-    e_task = lm_head_weights[vocab_ids_tensor]  # [num_classes, hidden_dim]
+    # Get task vocabulary embeddings (handles multi-token classes)
+    e_task, _token_info = get_task_vocab_embeddings(
+        tokenizer=tokenizer,
+        task_classes=task_classes,
+        lm_head_weights=lm_head_weights,
+        use_average_embedding=True,
+        verbose=False,
+    )
 
     results = []
 
@@ -235,16 +249,22 @@ def track_prag_across_layers_from_features(
             # Log exception for debugging
             print(f"[WARN] Failed to compute CV accuracy for {layer_name}: {e}")
 
+        # Convert probe_weights to torch tensor if needed
+        if isinstance(probe_weights, np.ndarray):
+            probe_weights_torch = torch.from_numpy(probe_weights).float()
+        else:
+            probe_weights_torch = probe_weights.float()  # type: ignore[unreachable]
+
         # Ensure probe_weights and e_task have same number of classes
-        if probe_weights.shape[0] != e_task.shape[0]:
-            min_classes = min(probe_weights.shape[0], e_task.shape[0])
-            probe_weights = probe_weights[:min_classes]
+        if probe_weights_torch.shape[0] != e_task.shape[0]:
+            min_classes = min(probe_weights_torch.shape[0], e_task.shape[0])
+            probe_weights_torch = probe_weights_torch[:min_classes]
             e_task_aligned = e_task[:min_classes]
         else:
             e_task_aligned = e_task
 
         # Compute PRAG
-        prag_result = compute_prag(probe_weights, e_task_aligned)
+        prag_result = compute_prag(probe_weights_torch, e_task_aligned, verbose=False)
 
         # Extract layer number for sorting
         layer_num = int(layer_name[1:]) if layer_name.startswith("l") and layer_name[1:].isdigit() else -1

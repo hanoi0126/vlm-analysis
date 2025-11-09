@@ -2,12 +2,20 @@
 
 from pathlib import Path
 from typing import Any
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 from src.visualization.probing_plots import TASK_COLORS
+
+# Suppress font warnings for Japanese characters
+warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+# Suppress font warnings more specifically for missing glyphs
+warnings.filterwarnings("ignore", message=".*Glyph.*missing from font.*")
 
 
 def plot_prag_figure1(
@@ -16,6 +24,8 @@ def plot_prag_figure1(
     prag_comparison_results: dict[str, Any] | None = None,
     layer_wise_results: dict[str, pd.DataFrame] | None = None,
     attribute_analysis: pd.DataFrame | None = None,
+    probe_unembedding_data: dict[str, dict[str, np.ndarray]] | None = None,
+    target_layer: str = "last",
     output_path: Path | None = None,
     figsize: tuple[float, float] = (16, 12),
 ) -> None:
@@ -41,7 +51,7 @@ def plot_prag_figure1(
 
     # Panel A: Probe vs Unembedding方向の可視化
     ax_a = fig.add_subplot(gs[0, 0])
-    _plot_probe_unembedding_alignment(ax_a, results_root, tasks)
+    _plot_probe_unembedding_alignment(ax_a, results_root, tasks, probe_unembedding_data=probe_unembedding_data, target_layer=target_layer)
 
     # Panel B: VLM vs LLM比較
     ax_b = fig.add_subplot(gs[0, 1])
@@ -68,20 +78,128 @@ def plot_prag_figure1(
 
 def _plot_probe_unembedding_alignment(
     ax: plt.Axes,
-    results_root: Path,  # noqa: ARG001
-    tasks: list[str],  # noqa: ARG001
-    method: str = "PCA",  # noqa: ARG001
+    _results_root: Path,
+    tasks: list[str],
+    method: str = "PCA",
+    probe_unembedding_data: dict[str, dict[str, np.ndarray]] | None = None,
+    target_layer: str = "last",  # noqa: ARG001
 ) -> None:
-    """Plot Panel A: Probe vs Unembedding方向の可視化."""
-    # This is a simplified version - full implementation would load probe weights
-    # and unembedding weights, then project to 2D
+    """
+    Plot Panel A: Probe vs Unembedding方向の可視化.
 
-    # For now, show a placeholder with task colors
-    ax.text(0.5, 0.5, "Probe vs Unembedding Alignment\n(PCA/t-SNE visualization)", ha="center", va="center", fontsize=12)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
+    Args:
+        ax: Matplotlib axes
+        results_root: Root directory containing results
+        tasks: List of task names
+        method: Dimensionality reduction method ("PCA" or "t-SNE")
+        probe_unembedding_data: Optional dict mapping task to {"probe": weights, "unembedding": weights}
+        target_layer: Target layer name for loading data
+    """
+    if probe_unembedding_data is None:
+        # Fallback to placeholder if no data provided
+        ax.text(0.5, 0.5, "Probe vs Unembedding Alignment\n(Data not available)", ha="center", va="center", fontsize=12)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_title("Panel A: Direction Alignment", fontweight="bold")
+        ax.axis("off")
+        return
+
+    # Collect all probe and unembedding weights
+    all_probe_weights = []
+    all_unembedding_weights = []
+    task_labels_probe = []
+    task_labels_unembedding = []
+
+    for task in tasks:
+        if task not in probe_unembedding_data:
+            continue
+
+        data = probe_unembedding_data[task]
+        probe_w = data.get("probe")
+        unembed_w = data.get("unembedding")
+
+        if probe_w is not None and unembed_w is not None:
+            # Ensure same number of classes
+            min_classes = min(probe_w.shape[0], unembed_w.shape[0])
+            probe_w = probe_w[:min_classes]
+            unembed_w = unembed_w[:min_classes]
+
+            all_probe_weights.append(probe_w)
+            all_unembedding_weights.append(unembed_w)
+            task_labels_probe.extend([task] * probe_w.shape[0])
+            task_labels_unembedding.extend([task] * unembed_w.shape[0])
+
+    if len(all_probe_weights) == 0:
+        ax.text(0.5, 0.5, "No probe/unembedding data available", ha="center", va="center", fontsize=12)
+        ax.set_title("Panel A: Direction Alignment", fontweight="bold")
+        ax.axis("off")
+        return
+
+    # Concatenate all weights
+    probe_matrix = np.vstack(all_probe_weights)  # [total_classes, hidden_dim]
+    unembedding_matrix = np.vstack(all_unembedding_weights)  # [total_classes, hidden_dim]
+
+    # Combine for dimensionality reduction
+    combined_matrix = np.vstack([probe_matrix, unembedding_matrix])  # [2*total_classes, hidden_dim]
+
+    # Apply dimensionality reduction
+    if method == "PCA":
+        reducer = PCA(n_components=2, random_state=42)
+        reduced = reducer.fit_transform(combined_matrix)
+    elif method == "t-SNE":
+        # Use PCA first for initialization (t-SNE is slow on high-dim data)
+        pca_init = PCA(n_components=50, random_state=42)
+        pca_reduced = pca_init.fit_transform(combined_matrix)
+        reducer = TSNE(n_components=2, random_state=42, perplexity=min(30, len(combined_matrix) - 1))
+        reduced = reducer.fit_transform(pca_reduced)
+    else:
+        error_msg = f"Unknown method: {method}"
+        raise ValueError(error_msg)
+
+    # Split back into probe and unembedding
+    n_probe = probe_matrix.shape[0]
+    probe_2d = reduced[:n_probe]
+    unembedding_2d = reduced[n_probe:]
+
+    # Plot with task colors
+    for _i, task in enumerate(tasks):
+        # Find indices for this task
+        probe_indices = [j for j, t in enumerate(task_labels_probe) if t == task]
+        unembed_indices = [j for j, t in enumerate(task_labels_unembedding) if t == task]
+
+        if len(probe_indices) > 0:
+            color = TASK_COLORS.get(task, "tab:blue")
+            ax.scatter(
+                probe_2d[probe_indices, 0],
+                probe_2d[probe_indices, 1],
+                c=color,
+                marker="o",
+                s=50,
+                alpha=0.6,
+                label=f"{task} (probe)",
+                edgecolors="black",
+                linewidths=0.5,
+            )
+
+        if len(unembed_indices) > 0:
+            color = TASK_COLORS.get(task, "tab:blue")
+            ax.scatter(
+                unembedding_2d[unembed_indices, 0],
+                unembedding_2d[unembed_indices, 1],
+                c=color,
+                marker="^",
+                s=50,
+                alpha=0.6,
+                label=f"{task} (unembedding)",
+                edgecolors="black",
+                linewidths=0.5,
+            )
+
+    ax.set_xlabel(f"{method} Component 1", fontsize=10)
+    ax.set_ylabel(f"{method} Component 2", fontsize=10)
     ax.set_title("Panel A: Direction Alignment", fontweight="bold")
-    ax.axis("off")
+    ax.legend(fontsize=8, loc="best", ncol=2)
+    ax.grid(True, alpha=0.3)
 
 
 def _plot_vlm_vs_llm_comparison(
@@ -304,8 +422,41 @@ def _plot_readout_intervention_results(
 ) -> None:
     """Plot Panel A: Readout Replacement実験結果."""
     if readout_intervention_results is None:
-        ax.text(0.5, 0.5, "No intervention data", ha="center", va="center", fontsize=12)
+        ax.text(
+            0.5,
+            0.5,
+            "No intervention data\n(Run readout intervention experiment)",
+            ha="center",
+            va="center",
+            fontsize=12,
+            color="gray",
+            bbox={"boxstyle": "round", "facecolor": "lightgray", "alpha": 0.5},
+        )
         ax.set_title("Panel A: Readout Replacement", fontweight="bold")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+        return
+
+    # Check if there's an error
+    if "error" in readout_intervention_results:
+        error_msg = readout_intervention_results.get("error", "Unknown error")
+        error_type = readout_intervention_results.get("error_type", "Error")
+        task = readout_intervention_results.get("task", "unknown")
+        ax.text(
+            0.5,
+            0.5,
+            f"Error during intervention experiment\n\nTask: {task}\nType: {error_type}\n{error_msg[:100]}...",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="red",
+            bbox={"boxstyle": "round", "facecolor": "lightcoral", "alpha": 0.5},
+        )
+        ax.set_title("Panel A: Readout Replacement (Error)", fontweight="bold")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
         return
 
     # Extract results

@@ -14,6 +14,7 @@ from src.probing.prag import (
     compute_prag,
     extract_probe_weights,
     get_lm_head_weights,
+    get_task_vocab_embeddings,
     get_task_vocab_ids,
 )
 from src.probing.prag_statistics import PRAGStatistics
@@ -112,27 +113,34 @@ def analyze_prag_by_attribute(
         # Try to get actual class names from dataset
         # This requires loading the dataset
         try:
-            # Try to infer from decode log or other sources
-            # For now, use numeric labels
-            vocab_ids, _class_to_vocab_id = get_task_vocab_ids(tokenizer, task_classes)
+            # Use multi-token aware embedding extraction
+            e_task, _token_info = get_task_vocab_embeddings(
+                tokenizer=tokenizer,
+                task_classes=task_classes,
+                lm_head_weights=lm_head_weights,
+                use_average_embedding=True,
+                verbose=False,
+            )
         except Exception as e:
-            print(f"[ERROR] Failed to get vocab IDs for {attr}: {e}")
+            print(f"[ERROR] Failed to get vocab embeddings for {attr}: {e}")
             continue
 
-        # Extract task unembedding rows
-        vocab_ids_tensor = torch.tensor(vocab_ids)
-        e_task = lm_head_weights[vocab_ids_tensor]  # [num_classes, hidden_dim]
+        # Convert probe_weights to torch tensor if needed
+        if isinstance(probe_weights, np.ndarray):
+            probe_weights_torch = torch.from_numpy(probe_weights).float()
+        else:
+            probe_weights_torch = probe_weights.float()  # type: ignore[unreachable]
 
         # Ensure probe_weights and e_task have same number of classes
-        if probe_weights.shape[0] != e_task.shape[0]:
-            print(f"[WARN] Class count mismatch for {attr}: probe={probe_weights.shape[0]}, vocab={e_task.shape[0]}")
+        if probe_weights_torch.shape[0] != e_task.shape[0]:
+            print(f"[WARN] Class count mismatch for {attr}: probe={probe_weights_torch.shape[0]}, vocab={e_task.shape[0]}")
             # Use minimum
-            min_classes = min(probe_weights.shape[0], e_task.shape[0])
-            probe_weights = probe_weights[:min_classes]
+            min_classes = min(probe_weights_torch.shape[0], e_task.shape[0])
+            probe_weights_torch = probe_weights_torch[:min_classes]
             e_task = e_task[:min_classes]
 
         # Compute PRAG
-        prag_result = compute_prag(probe_weights, e_task)
+        prag_result = compute_prag(probe_weights_torch, e_task, verbose=False)
 
         # Calculate performance gap
         performance_gap = probe_acc - decode_acc if not (np.isnan(probe_acc) or np.isnan(decode_acc)) else np.nan
@@ -188,6 +196,7 @@ def analyze_prag_with_dataset_classes(
     max_iter: int = 2000,
     C: float = 1.0,  # noqa: N803
     solver: str = "lbfgs",
+    debug: bool = False,
 ) -> dict[str, Any]:
     """
     Analyze PRAG for a single task with dataset class information.
@@ -201,6 +210,7 @@ def analyze_prag_with_dataset_classes(
         max_iter: Max iterations for LogisticRegression
         C: Inverse regularization strength
         solver: Solver for LogisticRegression
+        debug: If True, print detailed debug information
 
     Returns:
         Dictionary with PRAG results and metrics
@@ -222,21 +232,37 @@ def analyze_prag_with_dataset_classes(
         use_all_data=True,
     )
 
-    # Get task vocabulary IDs
-    vocab_ids, class_to_vocab_id = get_task_vocab_ids(tokenizer, task_classes)
+    # Get task vocabulary embeddings (handles multi-token classes)
+    # Get task name from dataset if available
+    task_name = getattr(dataset, "task", None) or layer_name
+    e_task, token_info = get_task_vocab_embeddings(
+        tokenizer=tokenizer,
+        task_classes=task_classes,
+        lm_head_weights=lm_head_weights,
+        use_average_embedding=True,  # Use average embedding for multi-token classes
+        verbose=debug,  # Print warnings for multi-token classes if debugging
+        debug=debug,  # Enable detailed token ID debugging
+        attribute=task_name,
+    )
 
-    # Extract task unembedding rows
-    vocab_ids_tensor = torch.tensor(vocab_ids)
-    e_task = lm_head_weights[vocab_ids_tensor]  # [num_classes, hidden_dim]
+    # Convert probe_weights to torch tensor if needed
+    if isinstance(probe_weights, np.ndarray):
+        probe_weights_torch = torch.from_numpy(probe_weights).float()
+    else:
+        probe_weights_torch = probe_weights.float()  # type: ignore[unreachable]
 
     # Ensure probe_weights and e_task have same number of classes
-    if probe_weights.shape[0] != e_task.shape[0]:
-        min_classes = min(probe_weights.shape[0], e_task.shape[0])
-        probe_weights = probe_weights[:min_classes]
+    if probe_weights_torch.shape[0] != e_task.shape[0]:
+        min_classes = min(probe_weights_torch.shape[0], e_task.shape[0])
+        probe_weights_torch = probe_weights_torch[:min_classes]
         e_task = e_task[:min_classes]
+        print(f"[WARN] Class count mismatch: using {min_classes} classes")
 
-    # Compute PRAG
-    prag_result = compute_prag(probe_weights, e_task)
+    # Compute PRAG with debug info
+    prag_result = compute_prag(probe_weights_torch, e_task, verbose=debug, debug=debug)
+
+    # Also get vocab_ids for backward compatibility
+    vocab_ids, class_to_vocab_id = get_task_vocab_ids(tokenizer, task_classes)
 
     return {
         "prag": prag_result,
@@ -244,5 +270,6 @@ def analyze_prag_with_dataset_classes(
         "task_classes": task_classes,
         "vocab_ids": vocab_ids,
         "class_to_vocab_id": class_to_vocab_id,
+        "token_info": token_info,  # Add tokenization info
         "layer_name": layer_name,
     }
