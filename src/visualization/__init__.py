@@ -9,6 +9,10 @@ from .logit_plots import (
     plot_logit_heatmap,
     plot_logit_scatter,
 )
+from .prag_plots import (
+    plot_prag_figure1,
+    plot_prag_figure2,
+)
 from .probing_plots import (
     TASK_COLORS,
     TASK_MARKERS,
@@ -33,5 +37,7 @@ __all__ = [
     "plot_layer_ranking_changes",
     "plot_logit_heatmap",
     "plot_logit_scatter",
+    "plot_prag_figure1",
+    "plot_prag_figure2",
     "plot_probe_curves_multi",
 ]

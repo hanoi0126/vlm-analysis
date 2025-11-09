@@ -179,11 +179,11 @@ def main(cfg: DictConfig) -> None:
                 acc_without = without_row["best_acc"].values[0]
                 diff = acc_with - acc_without
                 sign = "+" if diff >= 0 else ""
-                
+
                 # Get sample counts
                 n_with = with_row["n"].values[0] if "n" in with_row.columns else None
                 n_without = without_row["n"].values[0] if "n" in without_row.columns else None
-                
+
                 # Determine winner
                 if diff > 0:
                     winner = "Image"
@@ -194,22 +194,26 @@ def main(cfg: DictConfig) -> None:
                 else:
                     winner = "Tie"
                     winner_marker = ""
-                
+
                 print(
                     f"{task:<15} {acc_with:.4f} ({with_row['best_layer'].values[0]:<8}) "
                     f"{acc_without:.4f} ({without_row['best_layer'].values[0]:<8}) {sign}{diff:.4f}"
                 )
-                
-                summary_rows.append({
-                    "task": task,
-                    "with_image": acc_with,
-                    "text_only": acc_without,
-                    "diff": diff,
-                    "winner": winner,
-                    "winner_marker": winner_marker,
-                    "n_image": n_with if n_with is not None and not (isinstance(n_with, float) and np.isnan(n_with)) else None,
-                    "n_text": n_without if n_without is not None and not (isinstance(n_without, float) and np.isnan(n_without)) else None,
-                })
+
+                summary_rows.append(
+                    {
+                        "task": task,
+                        "with_image": acc_with,
+                        "text_only": acc_without,
+                        "diff": diff,
+                        "winner": winner,
+                        "winner_marker": winner_marker,
+                        "n_image": n_with if n_with is not None and not (isinstance(n_with, float) and np.isnan(n_with)) else None,
+                        "n_text": n_without
+                        if n_without is not None and not (isinstance(n_without, float) and np.isnan(n_without))
+                        else None,
+                    }
+                )
     else:
         # Use decode accuracy if probing is disabled
         print("\nDecode accuracy comparison (probing disabled):")
@@ -224,15 +228,15 @@ def main(cfg: DictConfig) -> None:
             if not with_row.empty and not without_row.empty:
                 decode_with = with_row["decode_acc"].values[0] if "decode_acc" in with_row.columns else None
                 decode_without = without_row["decode_acc"].values[0] if "decode_acc" in without_row.columns else None
-                
+
                 if decode_with is not None and decode_without is not None and not (np.isnan(decode_with) or np.isnan(decode_without)):
                     diff = decode_with - decode_without
                     sign = "+" if diff >= 0 else ""
-                    
+
                     # Get sample counts
                     n_with = with_row["n"].values[0] if "n" in with_row.columns else None
                     n_without = without_row["n"].values[0] if "n" in without_row.columns else None
-                    
+
                     # Determine winner
                     if diff > 0:
                         winner = "Image"
@@ -243,22 +247,23 @@ def main(cfg: DictConfig) -> None:
                     else:
                         winner = "Tie"
                         winner_marker = ""
-                    
-                    print(
-                        f"{task:<15} {decode_with:.4f} {'N/A':<8} "
-                        f"{decode_without:.4f} {'N/A':<8} {sign}{diff:.4f}"
+
+                    print(f"{task:<15} {decode_with:.4f} {'N/A':<8} {decode_without:.4f} {'N/A':<8} {sign}{diff:.4f}")
+
+                    summary_rows.append(
+                        {
+                            "task": task,
+                            "with_image": decode_with,
+                            "text_only": decode_without,
+                            "diff": diff,
+                            "winner": winner,
+                            "winner_marker": winner_marker,
+                            "n_image": n_with if n_with is not None and not (isinstance(n_with, float) and np.isnan(n_with)) else None,
+                            "n_text": n_without
+                            if n_without is not None and not (isinstance(n_without, float) and np.isnan(n_without))
+                            else None,
+                        }
                     )
-                    
-                    summary_rows.append({
-                        "task": task,
-                        "with_image": decode_with,
-                        "text_only": decode_without,
-                        "diff": diff,
-                        "winner": winner,
-                        "winner_marker": winner_marker,
-                        "n_image": n_with if n_with is not None and not (isinstance(n_with, float) and np.isnan(n_with)) else None,
-                        "n_text": n_without if n_without is not None and not (isinstance(n_without, float) and np.isnan(n_without)) else None,
-                    })
 
     # Save markdown summary
     markdown_path = comparison_root / "comparison_summary.md"
@@ -266,21 +271,21 @@ def main(cfg: DictConfig) -> None:
         f.write("# Image vs Text-Only Comparison Results\n\n")
         f.write(f"**Model:** {config.model.model_id}\n")
         f.write(f"**Experiment Date:** {Path(comparison_root).name}\n")
-        
+
         if config.probe.enabled:
             f.write(f"**CV Folds:** {config.probe.n_folds}\n")
             f.write("**Method:** Probing accuracy\n\n")
         else:
             f.write("**Method:** Decode accuracy (probing disabled)\n\n")
-        
+
         if summary_rows:
             f.write("## Summary Table\n\n")
             f.write("| Task | With Image | Text-Only | Diff | Winner | n (image) | n (text) |\n")
             f.write("|------|------------|-----------|------|--------|-----------|----------|\n")
-            
+
             # Sort by diff (descending) to show largest differences first
             summary_rows_sorted = sorted(summary_rows, key=lambda x: x["diff"], reverse=True)
-            
+
             for row in summary_rows_sorted:
                 task = row["task"]
                 with_img = row["with_image"]
@@ -290,14 +295,12 @@ def main(cfg: DictConfig) -> None:
                 winner_marker = row["winner_marker"]
                 n_img = row["n_image"] if row["n_image"] is not None else "N/A"
                 n_txt = row["n_text"] if row["n_text"] is not None else "N/A"
-                
+
                 diff_str = f"{diff:+.3f}" if diff != 0 else "0.000"
                 winner_str = f"{winner} {winner_marker}".strip()
-                
-                f.write(
-                    f"| {task} | {with_img:.3f} | {text_only:.3f} | {diff_str} | {winner_str} | {n_img} | {n_txt} |\n"
-                )
-            
+
+                f.write(f"| {task} | {with_img:.3f} | {text_only:.3f} | {diff_str} | {winner_str} | {n_img} | {n_txt} |\n")
+
             f.write("\n## Notes\n\n")
             f.write("- **With Image**: Feature extraction")
             if config.probe.enabled:
@@ -317,7 +320,7 @@ def main(cfg: DictConfig) -> None:
         else:
             f.write("## No Results\n\n")
             f.write("No comparison data available.\n")
-    
+
     print(f"\nMarkdown summary saved to: {markdown_path}")
 
     print("\n" + "=" * 80)

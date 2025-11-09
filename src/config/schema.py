@@ -1,6 +1,7 @@
 """Configuration schemas using Pydantic BaseModel for Hydra integration."""
 
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -71,6 +72,23 @@ class LogitAnalysisConfig(BaseModel):
     save_choice_logits: bool = Field(default=True, description="Save choice logits only")
 
 
+class PRAGConfig(BaseModel):
+    """PRAG (Probe-Readout Alignment Gap) experiment configuration."""
+
+    enabled: bool = Field(default=False, description="Enable PRAG experiments")
+    save_probe_weights: bool = Field(default=False, description="Save probe weights for PRAG calculation")
+    target_layer: str = Field(default="best", description="Target layer for PRAG calculation (e.g., 'l19' or 'best')")
+    statistics: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "bootstrap_samples": 1000,
+            "confidence_level": 0.95,
+            "significance_threshold": 0.05,
+            "effect_size_threshold": 0.5,
+        },
+        description="Statistical test settings",
+    )
+
+
 class Config(BaseModel):
     """Main configuration."""
 
@@ -80,6 +98,7 @@ class Config(BaseModel):
     probe: ProbeConfig
     output: OutputConfig
     logit_analysis: LogitAnalysisConfig = Field(default_factory=LogitAnalysisConfig, description="Logit analysis settings")
+    prag: PRAGConfig = Field(default_factory=PRAGConfig, description="PRAG experiment settings")
 
     # Experiment settings
     batch_size: int = Field(default=8, description="Batch size")
