@@ -20,7 +20,7 @@ class HeadAblationHook:
     def __init__(
         self,
         layer_idx: int,
-        head_idx: int | None = None,
+        head_idx: int | list[int] | None = None,
         ablation_type: str = "zero",
         num_heads: int = 16,
     ) -> None:
@@ -29,12 +29,20 @@ class HeadAblationHook:
 
         Args:
             layer_idx: Target layer index
-            head_idx: Target head index, or None for full layer ablation
+            head_idx: Target head index (int), list of head indices, or None for full layer ablation
             ablation_type: Type of ablation ('zero', 'mean', 'random')
             num_heads: Number of attention heads per layer (default: 16 for Qwen2.5-VL-3B)
         """
         self.layer_idx = layer_idx
-        self.head_idx = head_idx
+        # Normalize head_idx to list format for consistent handling
+        if head_idx is None:
+            self.head_indices = None
+        elif isinstance(head_idx, int):
+            self.head_indices = [head_idx]
+        else:
+            self.head_indices = list(head_idx)
+        # Keep head_idx for backward compatibility
+        self.head_idx = head_idx if isinstance(head_idx, int) or head_idx is None else head_idx[0] if head_idx else None
         self.ablation_type = ablation_type
         self.num_heads = num_heads
 
@@ -97,7 +105,7 @@ class HeadAblationHook:
         [batch_size, seq_len, hidden_dim] where hidden_dim = num_heads * head_dim
 
         We reshape to [batch_size, seq_len, num_heads, head_dim] to isolate heads,
-        zero out the target head, then flatten back.
+        zero out the target head(s), then flatten back.
         """
         batch_size, seq_len, hidden_dim = concat_output.shape
         head_dim = hidden_dim // self.num_heads
@@ -108,12 +116,14 @@ class HeadAblationHook:
         # Clone to avoid in-place modification issues
         reshaped = reshaped.clone()
 
-        if self.head_idx is None:
+        if self.head_indices is None:
             # Full layer ablation: zero out all heads
             reshaped[:, :, :, :] = 0.0
         else:
-            # Single head ablation: zero out specific head
-            reshaped[:, :, self.head_idx, :] = 0.0
+            # Ablate specific head(s)
+            for head_idx in self.head_indices:
+                if 0 <= head_idx < self.num_heads:
+                    reshaped[:, :, head_idx, :] = 0.0
 
         # Flatten back: [batch, seq, num_heads, head_dim] -> [batch, seq, hidden]
         modified_output = reshaped.view(batch_size, seq_len, hidden_dim)
@@ -133,12 +143,14 @@ class HeadAblationHook:
         reshaped = concat_output.view(batch_size, seq_len, self.num_heads, head_dim)
         reshaped = reshaped.clone()
 
-        if self.head_idx is None:
+        if self.head_indices is None:
             # Full layer ablation
             reshaped[:, :, :, :] = self.mean_value
         else:
-            # Single head ablation
-            reshaped[:, :, self.head_idx, :] = self.mean_value
+            # Ablate specific head(s)
+            for head_idx in self.head_indices:
+                if 0 <= head_idx < self.num_heads:
+                    reshaped[:, :, head_idx, :] = self.mean_value
 
         # Flatten back
         modified_output = reshaped.view(batch_size, seq_len, hidden_dim)
@@ -157,16 +169,18 @@ class HeadAblationHook:
         reshaped = concat_output.view(batch_size, seq_len, self.num_heads, head_dim)
         reshaped = reshaped.clone()
 
-        # Sample random value from pool
-        random_idx = int(torch.randint(0, len(self.random_pool), (1,)).item())
-        random_value = self.random_pool[random_idx]
-
-        if self.head_idx is None:
-            # Full layer ablation
+        if self.head_indices is None:
+            # Full layer ablation: sample random value from pool
+            random_idx = int(torch.randint(0, len(self.random_pool), (1,)).item())
+            random_value = self.random_pool[random_idx]
             reshaped[:, :, :, :] = random_value
         else:
-            # Single head ablation
-            reshaped[:, :, self.head_idx, :] = random_value
+            # Ablate specific head(s): each head gets independent random sample
+            for head_idx in self.head_indices:
+                if 0 <= head_idx < self.num_heads:
+                    random_idx = int(torch.randint(0, len(self.random_pool), (1,)).item())
+                    random_value = self.random_pool[random_idx]
+                    reshaped[:, :, head_idx, :] = random_value
 
         # Flatten back
         modified_output = reshaped.view(batch_size, seq_len, hidden_dim)
@@ -188,7 +202,7 @@ class AblationHookManager:
         self,
         model: nn.Module,
         layer_idx: int,
-        head_idx: int | None = None,
+        head_idx: int | list[int] | None = None,
         ablation_type: str = "zero",
         num_heads: int = 16,
     ) -> torch.utils.hooks.RemovableHandle:
@@ -198,7 +212,7 @@ class AblationHookManager:
         Args:
             model: The model (e.g., Qwen2.5-VL model)
             layer_idx: Target layer index
-            head_idx: Target head index, or None for full layer
+            head_idx: Target head index (int), list of head indices, or None for full layer
             ablation_type: Type of ablation
             num_heads: Number of heads per layer (default: 16 for Qwen2.5-VL-3B)
 
@@ -245,6 +259,38 @@ class AblationHookManager:
 
         return handle
 
+    def register_multi_head_hook(
+        self,
+        model: nn.Module,
+        layer_idx: int,
+        head_indices: list[int],
+        ablation_type: str = "zero",
+        num_heads: int = 16,
+    ) -> torch.utils.hooks.RemovableHandle:
+        """
+        Register ablation hook for multiple heads in a single layer.
+
+        This is a convenience method that registers a single hook for multiple heads.
+        More efficient than registering multiple hooks separately.
+
+        Args:
+            model: The model (e.g., Qwen2.5-VL model)
+            layer_idx: Target layer index
+            head_indices: List of head indices to ablate
+            ablation_type: Type of ablation
+            num_heads: Number of heads per layer
+
+        Returns:
+            Removable handle for the registered hook
+        """
+        return self.register_hook(
+            model=model,
+            layer_idx=layer_idx,
+            head_idx=head_indices,
+            ablation_type=ablation_type,
+            num_heads=num_heads,
+        )
+
     def remove_all_hooks(self) -> None:
         """Remove all registered hooks."""
         for handle in self.hooks:
@@ -268,7 +314,7 @@ class AblationHookManager:
 def ablate_head(
     model: nn.Module,
     layer_idx: int,
-    head_idx: int | None = None,
+    head_idx: int | list[int] | None = None,
     ablation_type: str = "zero",
     num_heads: int = 28,
 ) -> AblationHookManager:

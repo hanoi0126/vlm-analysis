@@ -47,6 +47,7 @@ class ExperimentConfig(BaseModel):
 class ProbeConfig(BaseModel):
     """Probing configuration."""
 
+    enabled: bool = Field(default=True, description="Enable probing experiments")
     n_folds: int = Field(default=5, description="Number of cross-validation folds")
     seed: int = Field(default=0, description="Random seed")
     max_iter: int = Field(default=2000, description="Max iterations for LogisticRegression")

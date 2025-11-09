@@ -1,6 +1,7 @@
 """Visualization functions for ablation experiments."""
 
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -456,3 +457,397 @@ def generate_all_phase2_visualizations(
     )
 
     print(f"All Phase 2 visualizations saved to: {output_dir}")
+
+
+def plot_progressive_effect(
+    analysis: dict[str, Any],
+    baseline: dict[str, Any],
+    layer_idx: int,
+    tasks: list[str],
+    output_path: str | Path | None = None,
+    figsize: tuple[int, int] = (16, 8),
+) -> plt.Figure:
+    """
+    Plot progressive effect: n_heads (x-axis) vs accuracy (y-axis).
+
+    Shows baseline (horizontal dashed line), mean accuracy with error bars,
+    and per-task lines with significant points marked.
+
+    Args:
+        analysis: Analysis dictionary from multi-head ablation
+        baseline: Baseline results dictionary
+        layer_idx: Layer index to plot
+        tasks: List of tasks
+        output_path: Path to save figure
+        figsize: Figure size
+
+    Returns:
+        Figure object
+    """
+    apply_plot_style()
+
+    if layer_idx not in analysis:
+        msg = f"Layer {layer_idx} not found in analysis"
+        raise ValueError(msg)
+
+    layer_analysis = analysis[layer_idx]
+    n_heads_list = sorted([int(k) for k in layer_analysis])
+
+    fig, axes = plt.subplots(2, 4, figsize=figsize)
+    axes = axes.flatten()
+
+    for task_idx, task in enumerate(tasks):
+        if task_idx >= len(axes):
+            break
+
+        ax = axes[task_idx]
+
+        # Baseline
+        baseline_acc = baseline[task]["accuracy"]
+        ax.axhline(
+            baseline_acc,
+            color="gray",
+            linestyle="--",
+            label="Baseline",
+            linewidth=1.5,
+        )
+
+        # Ablation results
+        means = []
+        stds = []
+        n_heads_plot = []
+        for n_heads in n_heads_list:
+            if n_heads in layer_analysis:
+                task_stat = layer_analysis[n_heads]["task_stats"][task]
+                means.append(task_stat["mean"])
+                stds.append(task_stat["std"])
+                n_heads_plot.append(n_heads)
+
+        # Plot with error bars
+        if means:
+            ax.errorbar(
+                n_heads_plot,
+                means,
+                yerr=stds,
+                marker="o",
+                capsize=5,
+                label=f"{task}",
+                linewidth=2,
+                markersize=6,
+            )
+
+            # Mark significant points
+            for i, n_heads in enumerate(n_heads_plot):
+                if layer_analysis[n_heads]["task_stats"][task]["significant"]:
+                    ax.scatter(
+                        n_heads,
+                        means[i],
+                        s=150,
+                        marker="*",
+                        color="red",
+                        zorder=5,
+                        edgecolors="black",
+                        linewidths=0.5,
+                    )
+
+        ax.set_xlabel("Number of Ablated Heads")
+        ax.set_ylabel("Accuracy")
+        ax.set_title(f"{task.capitalize()} Task")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    # Hide unused subplots
+    for idx in range(len(tasks), len(axes)):
+        axes[idx].set_visible(False)
+
+    plt.tight_layout()
+
+    if output_path is not None:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved progressive effect plot to: {output_path}")
+
+    return fig
+
+
+def plot_layer_nheads_heatmap(
+    multi_layer_analysis: dict[str, Any],
+    metric: str = "overall_delta",
+    output_path: str | Path | None = None,
+    figsize: tuple[int, int] = (10, 6),
+) -> plt.Figure:
+    """
+    Plot heatmap: Layer (y-axis) × n_heads (x-axis).
+
+    Color represents performance change.
+
+    Args:
+        multi_layer_analysis: Analysis dictionary for multiple layers
+        metric: Metric to plot ('overall_delta' or 'n_significant_tasks')
+        output_path: Path to save figure
+        figsize: Figure size
+
+    Returns:
+        Figure object
+    """
+    apply_plot_style()
+
+    layers = sorted([int(k) for k in multi_layer_analysis])
+    if not layers:
+        msg = "No layers found in analysis"
+        raise ValueError(msg)
+
+    # Get n_heads values from first layer
+    first_layer = layers[0]
+    n_heads_values = sorted([int(k) for k in multi_layer_analysis[first_layer]])
+
+    # Prepare data matrix
+    matrix = np.zeros((len(layers), len(n_heads_values)))
+
+    for i, layer in enumerate(layers):
+        layer_analysis = multi_layer_analysis[layer]
+        for j, n_heads in enumerate(n_heads_values):
+            if n_heads in layer_analysis:
+                matrix[i, j] = layer_analysis[n_heads][metric]
+
+    # Plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sns.heatmap(
+        matrix,
+        xticklabels=n_heads_values,
+        yticklabels=layers,
+        cmap="RdYlGn_r",  # Red = negative (bad), Green = positive (good)
+        center=0,
+        annot=True,
+        fmt=".3f",
+        ax=ax,
+        cbar_kws={"label": metric.replace("_", " ").title()},
+    )
+
+    ax.set_xlabel("Number of Ablated Heads")
+    ax.set_ylabel("Layer")
+    ax.set_title(f"Multi-Head Ablation Effect ({metric.replace('_', ' ').title()})")
+
+    plt.tight_layout()
+
+    if output_path is not None:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved layer-nheads heatmap to: {output_path}")
+
+    return fig
+
+
+def plot_threshold_detection(
+    analysis: dict[str, Any],
+    layer_idx: int,
+    output_path: str | Path | None = None,
+    figsize: tuple[int, int] = (8, 6),
+) -> tuple[plt.Figure, int | None]:
+    """
+    Detect and plot the critical threshold where performance starts to drop.
+
+    Args:
+        analysis: Analysis dictionary
+        layer_idx: Layer index to analyze
+        output_path: Path to save figure
+        figsize: Figure size
+
+    Returns:
+        Tuple of (Figure object, threshold_n_heads)
+    """
+    apply_plot_style()
+
+    if layer_idx not in analysis:
+        msg = f"Layer {layer_idx} not found in analysis"
+        raise ValueError(msg)
+
+    layer_analysis = analysis[layer_idx]
+    n_heads_list = sorted([int(k) for k in layer_analysis])
+    overall_means = [layer_analysis[n]["overall_mean"] for n in n_heads_list]
+
+    # Detect elbow (largest second derivative)
+    if len(overall_means) >= 3:
+        second_deriv = np.diff(np.diff(overall_means))
+        elbow_idx = np.argmin(second_deriv) + 1  # +1 due to double diff
+        threshold_n_heads = n_heads_list[elbow_idx] if elbow_idx < len(n_heads_list) else None
+    else:
+        threshold_n_heads = None
+
+    # Plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.plot(
+        n_heads_list,
+        overall_means,
+        marker="o",
+        linewidth=2,
+        label="Mean Accuracy",
+        markersize=8,
+    )
+
+    # Mark threshold
+    if threshold_n_heads is not None:
+        ax.axvline(
+            threshold_n_heads,
+            color="red",
+            linestyle="--",
+            label=f"Threshold: {threshold_n_heads} heads",
+            linewidth=2,
+        )
+
+    ax.set_xlabel("Number of Ablated Heads")
+    ax.set_ylabel("Overall Accuracy (Mean across tasks)")
+    ax.set_title(f"Critical Threshold Detection (Layer {layer_idx})")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    if output_path is not None:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved threshold detection plot to: {output_path}")
+        if threshold_n_heads is not None:
+            print(f"Critical threshold: {threshold_n_heads} heads")
+
+    return fig, threshold_n_heads
+
+
+def plot_task_specific_thresholds(
+    analysis: dict[str, Any],
+    baseline: dict[str, Any],
+    layer_idx: int,
+    tasks: list[str],
+    output_path: str | Path | None = None,
+    figsize: tuple[int, int] = (10, 6),
+) -> dict[str, int | None]:
+    """
+    Analyze and plot task-specific thresholds where performance drop begins.
+
+    Args:
+        analysis: Analysis dictionary
+        baseline: Baseline results dictionary
+        layer_idx: Layer index to analyze
+        tasks: List of tasks
+        output_path: Path to save figure
+        figsize: Figure size
+
+    Returns:
+        Dictionary mapping task names to threshold n_heads
+    """
+    apply_plot_style()
+
+    if layer_idx not in analysis:
+        msg = f"Layer {layer_idx} not found in analysis"
+        raise ValueError(msg)
+
+    layer_analysis = analysis[layer_idx]
+    n_heads_list = sorted([int(k) for k in layer_analysis])
+
+    task_thresholds = {}
+
+    for task in tasks:
+        baseline_acc = baseline[task]["accuracy"]
+        threshold = None
+
+        for n_heads in n_heads_list:
+            if n_heads in layer_analysis:
+                task_stat = layer_analysis[n_heads]["task_stats"][task]
+                p_value = task_stat["p_value"]
+                delta = baseline_acc - task_stat["mean"]
+
+                # Check if significantly below baseline
+                if p_value < 0.001 and delta > 0.05:  # Significant & substantial
+                    threshold = n_heads
+                    break
+
+        task_thresholds[task] = threshold
+
+    # Visualize
+    tasks_sorted = sorted(
+        task_thresholds.items(),
+        key=lambda x: x[1] if x[1] is not None else 999,
+    )
+
+    task_names = [t[0] for t in tasks_sorted]
+    thresholds = [t[1] if t[1] is not None else 28 for t in tasks_sorted]
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    colors = ["steelblue" if t is not None else "lightgray" for t in thresholds]
+    ax.barh(task_names, thresholds, color=colors)
+    ax.set_xlabel("Threshold (Number of Heads)")
+    ax.set_title(f"Task-Specific Robustness (Layer {layer_idx})")
+    ax.axvline(14, color="red", linestyle="--", label="50% heads", linewidth=1.5)
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis="x")
+
+    plt.tight_layout()
+
+    if output_path is not None:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved task-specific thresholds plot to: {output_path}")
+
+    return task_thresholds
+
+
+def generate_all_multi_head_visualizations(
+    analysis: dict[str, Any],
+    baseline: dict[str, Any],
+    tasks: list[str],
+    output_dir: str | Path,
+    n_heads_values: list[int] | None = None,  # noqa: ARG001
+) -> None:
+    """
+    Generate all multi-head ablation visualizations.
+
+    Args:
+        analysis: Analysis dictionary
+        baseline: Baseline results dictionary
+        tasks: List of tasks
+        output_dir: Output directory
+        n_heads_values: List of n_heads values (for heatmap)
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Generating multi-head ablation visualizations...")
+
+    layers = sorted([int(k) for k in analysis])
+
+    # Progressive effect plots (one per layer)
+    for layer_idx in layers:
+        plot_progressive_effect(
+            analysis,
+            baseline,
+            layer_idx,
+            tasks,
+            output_path=output_dir / f"progressive_effect_layer_{layer_idx}.pdf",
+        )
+
+    # Layer × n_heads heatmap
+    if len(layers) > 1:
+        plot_layer_nheads_heatmap(
+            analysis,
+            metric="overall_delta",
+            output_path=output_dir / "layer_nheads_heatmap.pdf",
+        )
+
+    # Threshold detection (one per layer)
+    for layer_idx in layers:
+        plot_threshold_detection(
+            analysis,
+            layer_idx,
+            output_path=output_dir / f"threshold_detection_layer_{layer_idx}.pdf",
+        )
+
+    # Task-specific thresholds (one per layer)
+    for layer_idx in layers:
+        plot_task_specific_thresholds(
+            analysis,
+            baseline,
+            layer_idx,
+            tasks,
+            output_path=output_dir / f"task_specific_thresholds_layer_{layer_idx}.pdf",
+        )
+
+    print(f"All multi-head visualizations saved to: {output_dir}")

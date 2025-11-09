@@ -26,11 +26,13 @@ from omegaconf import DictConfig, OmegaConf
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.ablation import run_combination_analysis, run_head_ablation, run_layer_ablation
+from src.ablation.multi_head_ablation import run_progressive_multi_head_ablation
 from src.config.schema import Config
 from src.models.registry import create_extractor
 from src.utils.model_utils import get_model_architecture_info
 from src.utils.paths import get_model_short_name
 from src.visualization.ablation_plots import (
+    generate_all_multi_head_visualizations,
     generate_all_phase2_visualizations,
     plot_combination_effects,
     plot_layer_importance,
@@ -63,6 +65,7 @@ def main(cfg: DictConfig) -> None:
     run_layer_ablation_exp = phases_cfg.get("layer_screening", True)
     run_head_ablation_exp = phases_cfg.get("head_analysis", True)
     run_combination_exp = phases_cfg.get("combination", True)
+    run_multi_head_exp = phases_cfg.get("multi_head", False)
 
     # Get target layers if specified
     target_layers: str | list[int] | None = None
@@ -82,7 +85,10 @@ def main(cfg: DictConfig) -> None:
     print(f"Tasks: {config.experiment.tasks}")
     print(f"Batch size: {config.batch_size}")
     print(f"Output: {config.output.results_root}")
-    print(f"Experiments: Layer={run_layer_ablation_exp}, Head={run_head_ablation_exp}, Combination={run_combination_exp}")
+    print(
+        f"Experiments: Layer={run_layer_ablation_exp}, Head={run_head_ablation_exp}, "
+        f"Combination={run_combination_exp}, MultiHead={run_multi_head_exp}"
+    )
     if target_layers == "all":
         print("Target layers: all (will be expanded after model loading)")
     elif target_layers:
@@ -123,6 +129,7 @@ def main(cfg: DictConfig) -> None:
     layer_results = None
     head_results = None
     combination_results = None
+    multi_head_results = None
     critical_layers: list[int] | None = target_layers if isinstance(target_layers, list) else None
 
     # Layer-level ablation
@@ -229,6 +236,60 @@ def main(cfg: DictConfig) -> None:
                 output_path=combination_output / "combination_effects.pdf",
             )
 
+    # Multi-head progressive ablation
+    if run_multi_head_exp:
+        print("\n" + "=" * 80)
+        print("MULTI-HEAD PROGRESSIVE ABLATION: Testing Cooperative Effects")
+        print("=" * 80)
+
+        # Get multi-head config
+        multi_head_cfg = ablation_cfg.get("multi_head", {})
+        multi_head_target_layers = multi_head_cfg.get("target_layers", None)
+
+        # Use ablation.target_layers if multi_head.target_layers not specified
+        if multi_head_target_layers is None:
+            multi_head_target_layers = critical_layers if critical_layers is not None else [14, 15, 16, 17]
+        elif isinstance(multi_head_target_layers, str) and multi_head_target_layers.lower() == "all":
+            multi_head_target_layers = list(range(num_layers))
+        elif isinstance(multi_head_target_layers, (list, tuple)) or hasattr(multi_head_target_layers, "__iter__"):
+            multi_head_target_layers = [int(layer) for layer in multi_head_target_layers]
+
+        if multi_head_target_layers is None:
+            print("Warning: Multi-head target layers not specified. Using default [14, 15, 16, 17]")
+            multi_head_target_layers = [14, 15, 16, 17]
+
+        # Get model short name
+        model_short_name = get_model_short_name(config.model.model_id)
+
+        # Run multi-head ablation
+        multi_head_results = run_progressive_multi_head_ablation(
+            model=model,
+            processor=processor,
+            config=config,
+            target_layers=multi_head_target_layers,
+            tasks=config.experiment.tasks,
+            output_dir=None,
+            device=config.device,
+            num_heads=num_heads,
+            n_heads_values=multi_head_cfg.get("n_heads_values", [1, 2, 4, 8, 16, 24, 28]),
+            n_trials=multi_head_cfg.get("n_trials", 10),
+            random_seed=multi_head_cfg.get("random_seed", 42),
+            show_progress=True,
+            model_id=model_short_name,
+        )
+
+        # Generate multi-head visualizations
+        if config.output.save_plots and multi_head_results is not None:
+            print("\nGenerating multi-head ablation visualizations...")
+            multi_head_output = Path(config.output.results_root) / "ablation" / "multi_head" / model_short_name / "figures"
+            generate_all_multi_head_visualizations(
+                analysis=multi_head_results["analysis"],
+                baseline=multi_head_results["results"]["baseline"],
+                tasks=config.experiment.tasks,
+                output_dir=multi_head_output,
+                n_heads_values=multi_head_cfg.get("n_heads_values", [1, 2, 4, 8, 16, 24, 28]),
+            )
+
     # Final summary
     print("\n" + "=" * 80)
     print("ABLATION EXPERIMENT COMPLETE")
@@ -249,6 +310,15 @@ def main(cfg: DictConfig) -> None:
         print("    → plots/: Visualization PDFs")
     if combination_results is not None:
         print(f"  - Head combination: {results_root / 'head_combination'}")
+    if multi_head_results is not None:
+        model_short_name = get_model_short_name(config.model.model_id)
+        multi_head_dir = results_root / "multi_head" / model_short_name
+        print(f"  - Multi-head ablation: {multi_head_dir}")
+        print("    → figures/: Progressive effect plots, heatmaps, threshold detection")
+        print("    → tables/: Summary statistics and per-task breakdown")
+        print("    → raw_results.pkl: Raw experimental data")
+        print("    → analysis.json: Statistical analysis results")
+        print("    → summary_report.txt: Text summary report")
 
     if config.output.save_plots:
         print("\nKey files:")
@@ -262,6 +332,13 @@ def main(cfg: DictConfig) -> None:
             print(f"  - Alignment heads: {head_dir / 'summary' / 'alignment_heads_summary.json'}")
         if combination_results is not None:
             print(f"  - Combination effects: {results_root / 'head_combination' / 'combination_effects.pdf'}")
+        if multi_head_results is not None:
+            model_short_name = get_model_short_name(config.model.model_id)
+            multi_head_dir = results_root / "multi_head" / model_short_name / "figures"
+            print(f"  - Progressive effect plots: {multi_head_dir / 'progressive_effect_layer_*.pdf'}")
+            print(f"  - Layer-nheads heatmap: {multi_head_dir / 'layer_nheads_heatmap.pdf'}")
+            print(f"  - Threshold detection: {multi_head_dir / 'threshold_detection_layer_*.pdf'}")
+            print(f"  - Task-specific thresholds: {multi_head_dir / 'task_specific_thresholds_layer_*.pdf'}")
 
     print("\n" + "=" * 80)
 
