@@ -132,10 +132,37 @@ def run_extract_probe_decode(
                     arr_buf["v_enc"].append(to.v_enc.detach().cpu().numpy())
                 if to.v_proj is not None:
                     arr_buf["v_proj"].append(to.v_proj.detach().cpu().numpy())
+
+                # Collect layer features
+                # If decode=True, prefer answer generation features (_answer suffix)
+                # Otherwise, use standard features
+                layer_features_collected = set()  # Track which base layer names we've collected
+
                 for name, ten in to.layers.items():
-                    if name not in arr_buf:
-                        arr_buf[name] = []
-                    arr_buf[name].append(ten.detach().cpu().numpy())
+                    # Skip _outavg features (average of all generation steps)
+                    if name.endswith("_outavg"):
+                        continue
+
+                    # For decode=True, prefer _answer features over standard features
+                    if config.decode and name.endswith("_answer"):
+                        # Use answer generation features
+                        base_name = name.replace("_answer", "")
+                        if base_name not in arr_buf:
+                            arr_buf[base_name] = []
+                        arr_buf[base_name].append(ten.detach().cpu().numpy())
+                        layer_features_collected.add(base_name)
+                    elif not config.decode:
+                        # For decode=False, use standard features
+                        if name not in arr_buf:
+                            arr_buf[name] = []
+                        arr_buf[name].append(ten.detach().cpu().numpy())
+                    elif config.decode and not name.endswith("_answer"):
+                        # For decode=True but no _answer version, use standard features only if _answer wasn't collected
+                        base_name = name
+                        if base_name not in layer_features_collected:
+                            if base_name not in arr_buf:
+                                arr_buf[base_name] = []
+                            arr_buf[base_name].append(ten.detach().cpu().numpy())
 
                 # Collect logits if extracted
                 if extract_logits:
